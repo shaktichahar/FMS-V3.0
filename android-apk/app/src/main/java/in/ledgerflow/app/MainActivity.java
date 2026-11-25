@@ -1,19 +1,25 @@
 package in.ledgerflow.app;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.telephony.SmsManager;
 import android.util.Base64;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -29,6 +35,8 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.webkit.WebViewAssetLoader;
 
@@ -43,6 +51,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -55,7 +65,12 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
     private ValueCallback<Uri[]> filePathCallback;
+    private Uri pendingCameraCaptureUri;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
+    private ActivityResultLauncher<String[]> runtimePermissionsLauncher;
+    private PermissionRequest pendingWebPermissionRequest;
+    private String pendingGeoOrigin;
+    private GeolocationPermissions.Callback pendingGeoCallback;
     private WebViewAssetLoader assetLoader;
     private final ExecutorService emailExecutor = Executors.newSingleThreadExecutor();
     private String allowedAppHost = BUNDLED_HOST;
@@ -76,18 +91,50 @@ public class MainActivity extends AppCompatActivity {
         entryUrl = BUNDLED_ENTRY_URL;
         allowedAppHost = BUNDLED_HOST;
 
+        runtimePermissionsLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestMultiplePermissions(),
+                results -> {
+                    if (pendingWebPermissionRequest != null) {
+                        boolean cameraGranted = isPermissionGranted(Manifest.permission.CAMERA);
+                        if (cameraGranted) {
+                            pendingWebPermissionRequest.grant(pendingWebPermissionRequest.getResources());
+                        } else {
+                            pendingWebPermissionRequest.deny();
+                        }
+                        pendingWebPermissionRequest = null;
+                    }
+                    if (pendingGeoCallback != null && pendingGeoOrigin != null) {
+                        boolean locationGranted = isPermissionGranted(Manifest.permission.ACCESS_FINE_LOCATION)
+                                || isPermissionGranted(Manifest.permission.ACCESS_COARSE_LOCATION);
+                        pendingGeoCallback.invoke(pendingGeoOrigin, locationGranted, false);
+                        pendingGeoCallback = null;
+                        pendingGeoOrigin = null;
+                    }
+                }
+        );
+
         fileChooserLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     if (filePathCallback == null) {
+                        pendingCameraCaptureUri = null;
                         return;
                     }
-                    Uri[] results = WebChromeClient.FileChooserParams.parseResult(
-                            result.getResultCode(),
-                            result.getData()
-                    );
+                    Uri[] results = null;
+                    if (result.getResultCode() == Activity.RESULT_OK) {
+                        Intent data = result.getData();
+                        if (data != null && (data.getData() != null || data.getClipData() != null)) {
+                            results = WebChromeClient.FileChooserParams.parseResult(
+                                    result.getResultCode(),
+                                    data
+                            );
+                        } else if (pendingCameraCaptureUri != null) {
+                            results = new Uri[]{pendingCameraCaptureUri};
+                        }
+                    }
                     filePathCallback.onReceiveValue(results);
                     filePathCallback = null;
+                    pendingCameraCaptureUri = null;
                 }
         );
 
@@ -114,6 +161,8 @@ public class MainActivity extends AppCompatActivity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        settings.setGeolocationEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(true);
         settings.setLoadWithOverviewMode(true);
@@ -152,7 +201,12 @@ public class MainActivity extends AppCompatActivity {
                     return false;
                 }
                 String scheme = uri.getScheme() != null ? uri.getScheme().toLowerCase(Locale.US) : "";
-                if ("mailto".equals(scheme) || "tel".equals(scheme)) {
+                if ("mailto".equals(scheme)
+                        || "tel".equals(scheme)
+                        || "sms".equals(scheme)
+                        || "smsto".equals(scheme)
+                        || "mms".equals(scheme)
+                        || "mmsto".equals(scheme)) {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, uri));
                     } catch (Exception ignored) {
@@ -232,6 +286,47 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(() -> {
+                    String[] requested = request.getResources();
+                    boolean needsCamera = false;
+                    for (String res : requested) {
+                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) {
+                            needsCamera = true;
+                            break;
+                        }
+                    }
+                    if (!needsCamera || isPermissionGranted(Manifest.permission.CAMERA)) {
+                        request.grant(requested);
+                    } else {
+                        if (pendingWebPermissionRequest != null) {
+                            pendingWebPermissionRequest.deny();
+                        }
+                        pendingWebPermissionRequest = request;
+                        runtimePermissionsLauncher.launch(new String[]{Manifest.permission.CAMERA});
+                    }
+                });
+            }
+
+            @Override
+            public void onGeolocationPermissionsShowPrompt(
+                    String origin,
+                    GeolocationPermissions.Callback callback
+            ) {
+                if (isPermissionGranted(Manifest.permission.ACCESS_FINE_LOCATION)
+                        || isPermissionGranted(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                    callback.invoke(origin, true, false);
+                } else {
+                    pendingGeoOrigin = origin;
+                    pendingGeoCallback = callback;
+                    runtimePermissionsLauncher.launch(new String[]{
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                    });
+                }
+            }
+
+            @Override
             public boolean onShowFileChooser(
                     WebView view,
                     ValueCallback<Uri[]> callback,
@@ -241,13 +336,46 @@ public class MainActivity extends AppCompatActivity {
                     filePathCallback.onReceiveValue(null);
                 }
                 filePathCallback = callback;
+                pendingCameraCaptureUri = null;
+
                 try {
-                    Intent intent = fileChooserParams.createIntent();
-                    fileChooserLauncher.launch(intent);
+                    boolean acceptsImages = false;
+                    String[] acceptTypes = fileChooserParams.getAcceptTypes();
+                    if (acceptTypes == null || acceptTypes.length == 0) {
+                        acceptsImages = true;
+                    } else {
+                        for (String t : acceptTypes) {
+                            if (t == null || t.isEmpty() || t.contains("image") || t.equals("*/*")) {
+                                acceptsImages = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    Intent cameraIntent = null;
+                    if ((acceptsImages || fileChooserParams.isCaptureEnabled())
+                            && isPermissionGranted(Manifest.permission.CAMERA)) {
+                        cameraIntent = createCameraCaptureIntent();
+                    }
+
+                    if (fileChooserParams.isCaptureEnabled() && cameraIntent != null) {
+                        fileChooserLauncher.launch(cameraIntent);
+                        return true;
+                    }
+
+                    Intent contentIntent = fileChooserParams.createIntent();
+                    if (cameraIntent != null) {
+                        Intent chooser = Intent.createChooser(contentIntent, "Select file or take photo");
+                        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{cameraIntent});
+                        fileChooserLauncher.launch(chooser);
+                    } else {
+                        fileChooserLauncher.launch(contentIntent);
+                    }
                     return true;
                 } catch (Exception e) {
                     filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "Unable to open file picker.", Toast.LENGTH_SHORT).show();
+                    pendingCameraCaptureUri = null;
+                    Toast.makeText(MainActivity.this, "Unable to open camera or file picker.", Toast.LENGTH_SHORT).show();
                     return false;
                 }
             }
@@ -315,10 +443,60 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        requestInitialDevicePermissions();
+
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
             webView.loadUrl(entryUrl);
+        }
+    }
+
+    private boolean isPermissionGranted(String permission) {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestInitialDevicePermissions() {
+        String[] desired = new String[]{
+                Manifest.permission.CAMERA,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.SEND_SMS,
+                Manifest.permission.RECEIVE_SMS,
+                Manifest.permission.READ_SMS
+        };
+        List<String> missing = new ArrayList<>();
+        for (String perm : desired) {
+            if (!isPermissionGranted(perm)) {
+                missing.add(perm);
+            }
+        }
+        if (!missing.isEmpty()) {
+            runtimePermissionsLauncher.launch(missing.toArray(new String[0]));
+        }
+    }
+
+    private Intent createCameraCaptureIntent() {
+        try {
+            File cameraDir = new File(getCacheDir(), "camera");
+            if (!cameraDir.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                cameraDir.mkdirs();
+            }
+            File photoFile = new File(cameraDir, "scan_" + System.currentTimeMillis() + ".jpg");
+            Uri photoUri = FileProvider.getUriForFile(
+                    this,
+                    getPackageName() + ".fileprovider",
+                    photoFile
+            );
+            pendingCameraCaptureUri = photoUri;
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            return intent;
+        } catch (Exception e) {
+            pendingCameraCaptureUri = null;
+            return null;
         }
     }
 
@@ -391,6 +569,64 @@ public class MainActivity extends AppCompatActivity {
                     ? BuildConfig.OTP_EMAIL_WEBHOOK_URL.trim()
                     : "";
             return webhookUrl.startsWith("https://");
+        }
+
+        @JavascriptInterface
+        public boolean hasSmsPermission() {
+            return isPermissionGranted(Manifest.permission.SEND_SMS);
+        }
+
+        @JavascriptInterface
+        public void requestDevicePermissions() {
+            runOnUiThread(MainActivity.this::requestInitialDevicePermissions);
+        }
+
+        @JavascriptInterface
+        public boolean sendSmsOtp(String toMobile, String message) {
+            if (!isPermissionGranted(Manifest.permission.SEND_SMS)) {
+                runOnUiThread(() -> runtimePermissionsLauncher.launch(new String[]{
+                        Manifest.permission.SEND_SMS,
+                        Manifest.permission.RECEIVE_SMS,
+                        Manifest.permission.READ_SMS
+                }));
+                return false;
+            }
+            String cleanNumber = toMobile == null ? "" : toMobile.trim().replaceAll("[^+0-9]", "");
+            if (cleanNumber.length() < 10 || message == null || message.trim().isEmpty()) {
+                return false;
+            }
+            try {
+                SmsManager smsManager;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    smsManager = getSystemService(SmsManager.class);
+                } else {
+                    //noinspection deprecation
+                    smsManager = SmsManager.getDefault();
+                }
+                if (smsManager == null) {
+                    return false;
+                }
+                smsManager.sendTextMessage(cleanNumber, null, message.trim(), null, null);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void openSmsComposer(String toMobile, String message) {
+            runOnUiThread(() -> {
+                try {
+                    String cleanNumber = toMobile == null ? "" : toMobile.trim();
+                    Intent intent = new Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + cleanNumber));
+                    if (message != null && !message.isEmpty()) {
+                        intent.putExtra("sms_body", message);
+                    }
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "No SMS app found on device.", Toast.LENGTH_SHORT).show();
+                }
+            });
         }
 
         @JavascriptInterface

@@ -19,6 +19,7 @@ import {
   getCloudApiBaseUrl,
   isAndroidEmailOtpReady,
   isStandaloneAndroidRuntime,
+  loginStandaloneWithPasswordOnly,
   setCloudApiBaseUrl,
   setSessionToken,
   testCloudApiConnection,
@@ -104,7 +105,7 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
     setLoading(true);
     try {
       if (mode === 'login') {
-        if (signInMethod === 'password-otp' || isStandalonePasswordOnly) {
+        if (signInMethod === 'password-otp') {
           const res = await api.login(username.trim(), password);
           if (!res.otpRequired) {
             setSessionToken(res.token);
@@ -135,6 +136,25 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to complete sign-in right now.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStandaloneDirectPasswordLogin = async () => {
+    setError(null);
+    setPendingApproval(null);
+    if (!username.trim() || !password) {
+      setError('Enter your registered email/username and password to sign in.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await loginStandaloneWithPasswordOnly(username.trim(), password);
+      setSessionToken(res.token);
+      onAuthenticated(res.user, res.loginAt);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to sign in right now.');
     } finally {
       setLoading(false);
     }
@@ -405,16 +425,14 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 </h2>
                 <p className="text-sm text-slate-500 mt-1">
                   {mode === 'login'
-                    ? isStandalonePasswordOnly
-                      ? 'Sign in with your registered email, username, and password.'
-                      : 'An OTP will be sent to your registered email to verify your sign-in.'
+                    ? 'An OTP will be sent to verify your sign-in.'
                     : isStandalonePasswordOnly
                       ? 'Create your account. Administrator approval is required before signing in.'
                       : 'An OTP will be sent to your registered email. Administrator approval is required before signing in.'}
                 </p>
               </div>
 
-              {mode === 'login' && !isStandalonePasswordOnly && (
+              {mode === 'login' && (
                 <div className="flex items-center gap-2 mb-5">
                   <button
                     type="button"
@@ -625,21 +643,30 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 >
                   <span>
                     {loading
-                      ? isStandalonePasswordOnly
-                        ? mode === 'login'
-                          ? 'Signing In...'
-                          : 'Creating Account...'
-                        : 'Sending OTP...'
-                      : isStandalonePasswordOnly
-                        ? mode === 'login'
-                          ? 'Sign In'
-                          : 'Create Account'
-                        : mode === 'login'
-                          ? 'Send Verification OTP'
+                      ? mode === 'login'
+                        ? 'Sending OTP...'
+                        : isStandalonePasswordOnly
+                          ? 'Creating Account...'
+                          : 'Sending OTP...'
+                      : mode === 'login'
+                        ? 'Send Verification OTP'
+                        : isStandalonePasswordOnly
+                          ? 'Create Account'
                           : 'Create Account & Send Email OTP'}
                   </span>
                   {!loading && <ArrowRight className="w-4 h-4" />}
                 </button>
+
+                {mode === 'login' && isStandalonePasswordOnly && signInMethod === 'password-otp' && (
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={handleStandaloneDirectPasswordLogin}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>Sign in directly with Password</span>
+                  </button>
+                )}
               </form>
             </div>
           )}
