@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-sans: "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Premium Sovereign Royal Navy / Sapphire Brand Scale */
+  --color-teal-50: #eef2ff;
+  --color-teal-100: #e0e7ff;
+  --color-teal-200: #c7d2fe;
+  --color-teal-300: #a5b4fc;
+  --color-teal-400: #6382f6;
+  --color-teal-500: #3b5bdb;
+  --color-teal-600: #2845b8;
+  --color-teal-700: #1d358f;
+  --color-teal-800: #15286e;
+  --color-teal-900: #0e1b4d;
+  --color-teal-950: #081132;
+}
+
+@layer base {
+  html, body {
+    font-family: var(--font-sans);
+    background-color: #f4f6fa;
+    color: #0b1220;
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: contain;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

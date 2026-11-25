@@ -1,0 +1,185 @@
+name: Build LedgerFlow Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "Optional published HTTPS URL (leave blank to build a 100% self-contained standalone APK)"
+        required: false
+        default: ""
+      otp_email_webhook_url:
+        description: "Optional Google Apps Script OTP Email Webhook URL (overrides repo OTP_EMAIL_WEBHOOK_URL secret/var)"
+        required: false
+        default: ""
+      create_release:
+        description: "Also publish a GitHub Release with direct LedgerFlow.apk download link"
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "vite.config.ts"
+      - "android-apk/**"
+      - ".github/workflows/build-android-apk.yml"
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Resolve APK runtime mode
+        id: resolve_url
+        shell: bash
+        env:
+          INPUT_URL: ${{ github.event.inputs.app_url }}
+          VAR_URL: ${{ vars.APP_URL }}
+        run: |
+          TARGET_URL="${INPUT_URL:-$VAR_URL}"
+          echo "url=$TARGET_URL" >> "$GITHUB_OUTPUT"
+          if [ -z "$TARGET_URL" ]; then
+            echo "mode=Standalone On-Device Bundled APK (Offline-Ready)" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK in Standalone Bundled Mode (no external server required)."
+          else
+            echo "mode=Connected Server Mode ($TARGET_URL) with Standalone Fallback" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK for URL: $TARGET_URL"
+          fi
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Build LedgerFlow Web Bundle & Embed into APK
+        shell: bash
+        run: |
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm run build
+          rm -rf android-apk/app/src/main/assets
+          mkdir -p android-apk/app/src/main/assets
+          cp -r dist/* android-apk/app/src/main/assets/
+          ls -la android-apk/app/src/main/assets
+
+      - name: Sync LedgerFlow launcher icons
+        shell: bash
+        run: |
+          mkdir -p android-apk/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p android-apk/app/src/main/res/mipmap-xhdpi
+          if [ -f public/pwa-512x512.png ]; then
+            cp public/pwa-512x512.png android-apk/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          fi
+          if [ -f public/pwa-192x192.png ]; then
+            cp public/pwa-192x192.png android-apk/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.4.0"
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+      - name: Build installable LedgerFlow APK
+        id: build_apk
+        shell: bash
+        env:
+          APP_URL: ${{ steps.resolve_url.outputs.url }}
+          OTP_EMAIL_WEBHOOK_URL: ${{ github.event.inputs.otp_email_webhook_url || secrets.OTP_EMAIL_WEBHOOK_URL || vars.OTP_EMAIL_WEBHOOK_URL }}
+          OTP_EMAIL_WEBHOOK_SECRET: ${{ secrets.OTP_EMAIL_WEBHOOK_SECRET }}
+        run: |
+          if [ -n "$OTP_EMAIL_WEBHOOK_URL" ]; then
+            echo "otp_status=Configured (Live Registered Email OTP Enabled)" >> "$GITHUB_OUTPUT"
+            echo "OTP Email Webhook: CONFIGURED"
+          else
+            echo "otp_status=Not Configured (Add OTP_EMAIL_WEBHOOK_URL in GitHub Repo Settings -> Secrets -> Actions)" >> "$GITHUB_OUTPUT"
+            echo "OTP Email Webhook: NOT CONFIGURED"
+          fi
+          gradle -p android-apk assembleDebug -PAPP_URL="$APP_URL" --no-daemon
+
+      - name: Package APK output
+        shell: bash
+        run: |
+          mkdir -p dist-apk
+          cp android-apk/app/build/outputs/apk/debug/app-debug.apk dist-apk/LedgerFlow-v2.0.0.apk
+          ls -lh dist-apk/LedgerFlow-v2.0.0.apk
+
+      - name: Upload LedgerFlow.apk Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: LedgerFlow-Android-APK
+          path: dist-apk/LedgerFlow-v2.0.0.apk
+          retention-days: 90
+
+      - name: Publish GitHub Release with direct APK download
+        if: github.event_name != 'workflow_dispatch' || inputs.create_release != false
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
+          APK_MODE: ${{ steps.resolve_url.outputs.mode }}
+          OTP_STATUS: ${{ steps.build_apk.outputs.otp_status }}
+        run: |
+          RELEASE_NOTES=$(cat <<EOF
+          Automated Android APK build for **LedgerFlow v2.0.0** (App Developed by Shakti Chahar).
+
+          - **Build Mode**: ${APK_MODE}
+          - **Email OTP Status**: ${OTP_STATUS}
+          - **Direct Download**: Click **\`LedgerFlow-v2.0.0.apk\`** under **Assets** below to download on your Android phone, then tap the file to install (allow "Install unknown apps" if prompted).
+          EOF
+          )
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" dist-apk/LedgerFlow-v2.0.0.apk --clobber
+            gh release edit "$TAG_NAME" \
+              --title "LedgerFlow Android APK (v2.0.0)" \
+              --notes "$RELEASE_NOTES" \
+              --latest
+          else
+            gh release create "$TAG_NAME" dist-apk/LedgerFlow-v2.0.0.apk \
+              --title "LedgerFlow Android APK (v2.0.0)" \
+              --notes "$RELEASE_NOTES" \
+              --latest
+          fi
+
+      - name: Add Direct APK Download Link to Job Summary
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
+          APK_MODE: ${{ steps.resolve_url.outputs.mode }}
+          OTP_STATUS: ${{ steps.build_apk.outputs.otp_status }}
+        run: |
+          {
+            echo "## LedgerFlow Android APK Ready"
+            echo ""
+            echo "- **Direct APK Download:** [Download LedgerFlow-v2.0.0.apk](https://github.com/${REPO}/releases/download/${TAG_NAME}/LedgerFlow-v2.0.0.apk)"
+            echo "- **GitHub Releases Page:** [Open Releases](https://github.com/${REPO}/releases/tag/${TAG_NAME})"
+            echo "- **Build Mode:** ${APK_MODE}"
+            echo "- **Email OTP Status:** ${OTP_STATUS}"
+            echo ""
+            echo "You can also download the zipped APK from the **Artifacts** section below on this page."
+          } >> "$GITHUB_STEP_SUMMARY"

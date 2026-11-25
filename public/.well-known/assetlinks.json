@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.run.asia_southeast1.fms_studio_992327932261.twa",
+      "sha256_cert_fingerprints": [
+        "00:01:54:A1:71:C6:1A:E0:C4:9E:73:0C:CA:2D:0C:70:4C:57:E1:9F:47:3A:A0:1A:75:36:A6:49:AB:81:C3:F3"
+      ]
+    }
+  }
+]

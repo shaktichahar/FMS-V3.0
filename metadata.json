@@ -1,0 +1,6 @@
+{
+  "name": "LedgerFlow",
+  "description": "Role-based finance management application with username/password authentication, admin and user panels, budget heads, budget allocation, transaction tracking, and visual spending analysis dashboards.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+def configuredAppUrl = (project.findProperty("APP_URL") ?: System.getenv("APP_URL") ?: "").toString().trim()
+def escapedAppUrl = configuredAppUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+def configuredOtpWebhookUrl = (project.findProperty("OTP_EMAIL_WEBHOOK_URL") ?: System.getenv("OTP_EMAIL_WEBHOOK_URL") ?: "").toString().trim()
+def escapedOtpWebhookUrl = configuredOtpWebhookUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+def configuredOtpWebhookSecret = (project.findProperty("OTP_EMAIL_WEBHOOK_SECRET") ?: System.getenv("OTP_EMAIL_WEBHOOK_SECRET") ?: "").toString().trim()
+def escapedOtpWebhookSecret = configuredOtpWebhookSecret.replace("\\", "\\\\").replace("\"", "\\\"")
+
+android {
+    namespace = 'in.ledgerflow.app'
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = 'in.ledgerflow.app'
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 5
+        versionName = '2.0.0'
+
+        buildConfigField 'String', 'APP_URL', "\"${escapedAppUrl}\""
+        buildConfigField 'String', 'OTP_EMAIL_WEBHOOK_URL', "\"${escapedOtpWebhookUrl}\""
+        buildConfigField 'String', 'OTP_EMAIL_WEBHOOK_SECRET', "\"${escapedOtpWebhookSecret}\""
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled = false
+            debuggable = false
+        }
+        release {
+            minifyEnabled = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.webkit:webkit:1.11.0'
+}

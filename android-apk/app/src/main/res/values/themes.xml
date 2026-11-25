@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.LedgerFlow" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#0B1220</item>
+        <item name="colorPrimaryDark">#0B1220</item>
+        <item name="colorAccent">#1D358F</item>
+        <item name="android:statusBarColor">#0B1220</item>
+        <item name="android:navigationBarColor">#0B1220</item>
+        <item name="android:windowBackground">#0B1220</item>
+    </style>
+</resources>
