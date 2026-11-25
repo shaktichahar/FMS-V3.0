@@ -12,7 +12,12 @@ import {
   RefreshCw,
   User,
 } from 'lucide-react';
-import { api, setSessionToken } from '../lib/api';
+import {
+  api,
+  isAndroidEmailOtpReady,
+  isStandaloneAndroidRuntime,
+  setSessionToken,
+} from '../lib/api';
 import type { OtpChallengeResponse, SafeUser } from '../types/finance';
 
 const APP_VERSION = '2.0.0';
@@ -26,6 +31,7 @@ type AuthTab = 'login' | 'register';
 type SignInMethod = 'password-otp' | 'direct-otp';
 
 export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps) {
+  const isStandalonePasswordOnly = isStandaloneAndroidRuntime() && !isAndroidEmailOtpReady();
   const [mode, setMode] = useState<AuthTab>('login');
   const [signInMethod, setSignInMethod] = useState<SignInMethod>('password-otp');
 
@@ -82,9 +88,14 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
     setLoading(true);
     try {
       if (mode === 'login') {
-        if (signInMethod === 'password-otp') {
-          const challenge = await api.login(username.trim(), password);
-          setOtpChallenge(challenge);
+        if (signInMethod === 'password-otp' || isStandalonePasswordOnly) {
+          const res = await api.login(username.trim(), password);
+          if (!res.otpRequired) {
+            setSessionToken(res.token);
+            onAuthenticated(res.user, res.loginAt);
+            return;
+          }
+          setOtpChallenge(res);
           setOtpCode('');
         } else {
           const challenge = await api.requestDirectOtp(identifier.trim());
@@ -92,18 +103,22 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
           setOtpCode('');
         }
       } else {
-        const challenge = await api.register({
+        const res = await api.register({
           username: username.trim(),
           password,
           fullName: fullName.trim(),
           email: email.trim(),
           mobile: mobile.trim(),
         });
-        setOtpChallenge(challenge);
+        if (!res.otpRequired) {
+          setPendingApproval({ message: res.message, user: res.user });
+          return;
+        }
+        setOtpChallenge(res);
         setOtpCode('');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to send verification OTP.');
+      setError(err instanceof Error ? err.message : 'Unable to complete sign-in right now.');
     } finally {
       setLoading(false);
     }
@@ -374,12 +389,16 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 </h2>
                 <p className="text-sm text-slate-500 mt-1">
                   {mode === 'login'
-                    ? 'An OTP will be sent to verify your sign-in.'
-                    : 'An OTP will be sent to your registered email. Administrator approval is required before signing in.'}
+                    ? isStandalonePasswordOnly
+                      ? 'Sign in with your registered email, username, and password.'
+                      : 'An OTP will be sent to your registered email to verify your sign-in.'
+                    : isStandalonePasswordOnly
+                      ? 'Create your account. Administrator approval is required before signing in.'
+                      : 'An OTP will be sent to your registered email. Administrator approval is required before signing in.'}
                 </p>
               </div>
 
-              {mode === 'login' && (
+              {mode === 'login' && !isStandalonePasswordOnly && (
                 <div className="flex items-center gap-2 mb-5">
                   <button
                     type="button"
@@ -590,10 +609,18 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 >
                   <span>
                     {loading
-                      ? 'Sending OTP...'
-                      : mode === 'login'
-                        ? 'Send Verification OTP'
-                        : 'Create Account & Send Email OTP'}
+                      ? isStandalonePasswordOnly
+                        ? mode === 'login'
+                          ? 'Signing In...'
+                          : 'Creating Account...'
+                        : 'Sending OTP...'
+                      : isStandalonePasswordOnly
+                        ? mode === 'login'
+                          ? 'Sign In'
+                          : 'Create Account'
+                        : mode === 'login'
+                          ? 'Send Verification OTP'
+                          : 'Create Account & Send Email OTP'}
                   </span>
                   {!loading && <ArrowRight className="w-4 h-4" />}
                 </button>

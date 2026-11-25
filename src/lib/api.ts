@@ -1,5 +1,9 @@
 import { auth } from './firebase';
-import { isStandaloneAndroidRuntime, localAppEngine } from './localAppEngine';
+import {
+  isAndroidEmailOtpReady,
+  isStandaloneAndroidRuntime,
+  localAppEngine,
+} from './localAppEngine';
 import type {
   AnalyticsSummary,
   BackupCounts,
@@ -11,9 +15,11 @@ import type {
   ImportResultSummary,
   ImportSanctionRow,
   ImportTransactionRow,
+  LoginResponse,
   OtpChallengeResponse,
   OtpVerifyResponse,
   PaymentMethod,
+  RegisterResponse,
   SafeUser,
   SanctionApprovalStatus,
   ServerBackupSnapshotMeta,
@@ -24,6 +30,8 @@ import type {
   UserWithStats,
   WorkbookImportResult,
 } from '../types/finance';
+
+export { isAndroidEmailOtpReady, isStandaloneAndroidRuntime };
 
 // Keep custom OTP session tokens strictly in JS memory (never localStorage/sessionStorage).
 let memoryToken: string | null = null;
@@ -75,7 +83,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 const remoteApi = {
   // Auth & OTP Verification
   login: (username: string, password: string) =>
-    request<OtpChallengeResponse>('/api/auth/login', {
+    request<LoginResponse>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
@@ -106,7 +114,7 @@ const remoteApi = {
     email: string;
     mobile: string;
   }) =>
-    request<OtpChallengeResponse>('/api/auth/register', {
+    request<RegisterResponse>('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

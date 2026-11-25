@@ -52,6 +52,24 @@ export type OtpVerifyResponse =
       user: SafeUser;
     };
 
+export type LoginResponse =
+  | OtpChallengeResponse
+  | {
+      otpRequired: false;
+      token: string;
+      user: SafeUser;
+      loginAt?: string;
+    };
+
+export type RegisterResponse =
+  | OtpChallengeResponse
+  | {
+      otpRequired: false;
+      pendingApproval: true;
+      message: string;
+      user: SafeUser;
+    };
+
 export interface UserWithStats extends SafeUser {
   spentTotal: number;
   transactionCount: number;

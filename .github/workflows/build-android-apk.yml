@@ -116,10 +116,14 @@ jobs:
             echo "otp_status=Configured (Live Registered Email OTP Enabled)" >> "$GITHUB_OUTPUT"
             echo "OTP Email Webhook: CONFIGURED"
           else
-            echo "otp_status=Not Configured (Add OTP_EMAIL_WEBHOOK_URL in GitHub Repo Settings -> Secrets -> Actions)" >> "$GITHUB_OUTPUT"
-            echo "OTP Email Webhook: NOT CONFIGURED"
+            echo "otp_status=Password Sign-In Mode (Add OTP_EMAIL_WEBHOOK_URL in GitHub Secrets to enable Email OTP)" >> "$GITHUB_OUTPUT"
+            echo "OTP Email Webhook: NOT CONFIGURED (APK will use Password Sign-In)"
           fi
-          gradle -p android-apk assembleDebug -PAPP_URL="$APP_URL" --no-daemon
+          gradle -p android-apk assembleDebug \
+            -PAPP_URL="$APP_URL" \
+            -POTP_EMAIL_WEBHOOK_URL="$OTP_EMAIL_WEBHOOK_URL" \
+            -POTP_EMAIL_WEBHOOK_SECRET="$OTP_EMAIL_WEBHOOK_SECRET" \
+            --no-daemon
 
       - name: Package APK output
         shell: bash

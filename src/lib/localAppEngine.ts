@@ -11,9 +11,11 @@ import type {
   ImportResultSummary,
   ImportSanctionRow,
   ImportTransactionRow,
+  LoginResponse,
   OtpChallengeResponse,
   OtpVerifyResponse,
   PaymentMethod,
+  RegisterResponse,
   SafeUser,
   SanctionApprovalStatus,
   SanctionAttachment,
@@ -80,6 +82,19 @@ export function isStandaloneAndroidRuntime(): boolean {
   if (typeof window === 'undefined') return false;
   const host = window.location.hostname.toLowerCase();
   return host === 'appassets.androidplatform.net' || window.location.protocol === 'file:';
+}
+
+export function isAndroidEmailOtpReady(): boolean {
+  if (typeof window === 'undefined') return false;
+  const bridge = window.LedgerFlowAndroid;
+  if (!bridge || typeof bridge.isOtpEmailConfigured !== 'function') {
+    return false;
+  }
+  try {
+    return Boolean(bridge.isOtpEmailConfigured());
+  } catch {
+    return false;
+  }
 }
 
 function uid(prefix: string): string {
@@ -797,7 +812,7 @@ function base64ToPdfBlob(storedFileName?: string): Blob {
 }
 
 export const localAppEngine = {
-  async login(username: string, password: string): Promise<OtpChallengeResponse> {
+  async login(username: string, password: string): Promise<LoginResponse> {
     const db = loadDb();
     const user = findUserByIdentifierLocal(db, username);
     if (!user || user.password !== password) {
@@ -805,7 +820,27 @@ export const localAppEngine = {
     }
     const accessErr = checkUserAccessAllowed(user);
     if (accessErr) throw new Error(accessErr);
-    return createOtpChallengeForUser(user, 'login');
+
+    if (isAndroidEmailOtpReady()) {
+      return createOtpChallengeForUser(user, 'login');
+    }
+
+    // Standalone APK without email webhook configured: sign in cleanly with verified password
+    // without displaying any OTP on screen or blocking access.
+    const token = uid('sess');
+    const loginAt = new Date().toISOString();
+    saveSession({
+      token,
+      userId: user.id,
+      loginAt,
+      lastActivity: Date.now(),
+    });
+    return {
+      otpRequired: false,
+      token,
+      user: toSafeUser(user),
+      loginAt,
+    };
   },
 
   async requestDirectOtp(identifier: string): Promise<OtpChallengeResponse> {
@@ -887,7 +922,7 @@ export const localAppEngine = {
     department?: string;
     email: string;
     mobile: string;
-  }): Promise<OtpChallengeResponse> {
+  }): Promise<RegisterResponse> {
     const db = loadDb();
     const cleanUser = payload.username.trim().toLowerCase();
     const cleanEmail = normalizeEmail(payload.email);
@@ -914,10 +949,23 @@ export const localAppEngine = {
       createdAt: new Date().toISOString(),
       password: payload.password,
     };
-    const challenge = await createOtpChallengeForUser(created, 'register');
+
+    if (isAndroidEmailOtpReady()) {
+      const challenge = await createOtpChallengeForUser(created, 'register');
+      db.users.push(created);
+      saveDb(db);
+      return challenge;
+    }
+
     db.users.push(created);
     saveDb(db);
-    return challenge;
+    return {
+      otpRequired: false,
+      pendingApproval: true,
+      message:
+        'Your account has been created and is now awaiting administrator approval before you can sign in.',
+      user: toSafeUser(created),
+    };
   },
 
   async syncGoogleSession(_idToken: string): Promise<{ user: SafeUser; loginAt?: string }> {
