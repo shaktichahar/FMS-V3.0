@@ -90,6 +90,31 @@ async function resolveBearerToken(): Promise<string | null> {
   return null;
 }
 
+async function fetchWithColdStartRetry(url: string, init: RequestInit): Promise<Response> {
+  const maxAttempts = 2;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(url, init);
+      if (
+        attempt < maxAttempts &&
+        (res.status === 502 || res.status === 503 || res.status === 504)
+      ) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Network request failed');
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await resolveBearerToken();
   const isCrossOriginApk = Boolean(getCloudApiBaseUrl());
@@ -103,14 +128,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(buildApiUrl(path), {
+    res = await fetchWithColdStartRetry(buildApiUrl(path), {
       credentials: isCrossOriginApk ? 'omit' : 'same-origin',
       ...options,
       headers,
     });
   } catch {
     throw new Error(
-      'Unable to reach the live Cloud SQL server. Please check your internet connection and try again.'
+      'Live Cloud SQL server is offline or blocked (503/CORS). Deploy the LedgerFlow web app to Cloud Run (or click Share/Deploy in AI Studio), set its public URL in API_BASE_URL if needed, and retry.'
     );
   }
 
@@ -120,14 +145,22 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   const contentType = res.headers.get('content-type') || '';
-  const data = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+  const isJson = contentType.includes('application/json');
+  const data = isJson ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
     if (res.status === 503 || res.status === 502 || res.status === 504) {
       throw new Error(
-        'Cloud SQL backend server is currently waking up or offline. Please ensure the LedgerFlow web app is published/deployed and retry.'
+        'Live Cloud SQL server is currently offline (HTTP ' +
+          res.status +
+          '). Please publish/deploy the LedgerFlow web app and try again.'
       );
     }
     throw new Error(data?.error || `Request failed (${res.status})`);
+  }
+  if (!isJson) {
+    throw new Error(
+      'Live Cloud SQL server returned a login/HTML page instead of API data. Deploy LedgerFlow to a public Cloud Run URL and rebuild the APK with API_BASE_URL set.'
+    );
   }
   return data as T;
 }

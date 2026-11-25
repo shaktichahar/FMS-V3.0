@@ -90,10 +90,8 @@ function resolvePort(): number {
   }
   const envPort = Number(process.env.PORT);
   const nginxPort = Number(process.env.NGINX_PORT);
-  if (Number.isFinite(envPort) && envPort > 0) {
-    if (process.env.NODE_ENV === 'production' || envPort !== nginxPort) {
-      return envPort;
-    }
+  if (Number.isFinite(envPort) && envPort > 0 && envPort !== nginxPort) {
+    return envPort;
   }
   return 3000;
 }
@@ -798,6 +796,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Background-Sync');
     res.setHeader('Access-Control-Expose-Headers', 'X-Refreshed-Token, Content-Disposition');
+    res.setHeader('Access-Control-Max-Age', '86400');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -3248,9 +3247,8 @@ async function startServer() {
   // Always serve prebuilt dist/ on Cloud Run (K_SERVICE), when NODE_ENV=production,
   // or when launched directly via `node server.ts` with a compiled dist/ bundle.
   const isProd =
-    process.env.NODE_ENV === 'production' ||
-    (Boolean(process.env.K_SERVICE) && hasDistBuild) ||
-    (!isDevRunner && hasDistBuild);
+    hasDistBuild &&
+    (process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE) || !isDevRunner);
 
   const pwaRootDir = isProd ? distDir : publicDir;
 
