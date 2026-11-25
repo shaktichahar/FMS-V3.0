@@ -120,6 +120,22 @@ function formatSmtpFailureMessage(err: unknown): string {
   return '';
 }
 
+export function isOtpDeliveryConfigured(): boolean {
+  const hasWebhook = Boolean(process.env.OTP_EMAIL_WEBHOOK_URL?.trim());
+  const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
+  const isGmailHost = host.toLowerCase() === 'smtp.gmail.com';
+  const hasSmtpPass = Boolean(
+    normalizeSmtpPassword(process.env.SMTP_PASS, isGmailHost) ||
+      normalizeSmtpPassword(process.env.GMAIL_APP_PASSWORD, isGmailHost)
+  );
+  const hasTwilio = Boolean(
+    process.env.TWILIO_ACCOUNT_SID?.trim() &&
+      process.env.TWILIO_AUTH_TOKEN?.trim() &&
+      process.env.TWILIO_FROM_NUMBER?.trim()
+  );
+  return hasWebhook || hasSmtpPass || hasTwilio;
+}
+
 async function sendEmailOtp(
   toEmail: string,
   fullName: string,
@@ -331,6 +347,6 @@ export async function dispatchLoginOtp(params: {
   }
 
   throw new Error(
-    'Email OTP service is not configured yet. Add GMAIL_APP_PASSWORD or OTP_EMAIL_WEBHOOK_URL in Settings → Secrets so OTPs are sent directly to registered emails.'
+    'Live Email/SMS OTP delivery is not configured on the server yet. Add GMAIL_APP_PASSWORD or OTP_EMAIL_WEBHOOK_URL in Settings → Secrets (or Cloud Run Variables) and redeploy — or sign in right now using the "Password + OTP" tab with your password.'
   );
 }

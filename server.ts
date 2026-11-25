@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -8,6 +9,7 @@ import { adminAuth } from './src/lib/firebase-admin.ts';
 import {
   ADMIN_GMAIL,
   dispatchLoginOtp,
+  isOtpDeliveryConfigured,
   isValidEmail,
   isValidMobile,
   maskEmail,
@@ -980,6 +982,17 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return;
     }
 
+    if (!isOtpDeliveryConfigured()) {
+      const session = issueUserSession(req, res, user);
+      res.json({
+        otpRequired: false,
+        token: session.token,
+        user: toSafeUser(user),
+        loginAt: session.loginAt,
+      });
+      return;
+    }
+
     const challenge = await issueOtpChallengeForUser(user, 'login');
     res.json(challenge);
   } catch (err) {
@@ -1229,6 +1242,17 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       passwordHash: pw.hash,
       passwordSalt: pw.salt,
     });
+
+    if (!isOtpDeliveryConfigured()) {
+      res.status(201).json({
+        otpRequired: false,
+        pendingApproval: true,
+        message:
+          'Your account has been created and is awaiting administrator approval before you can sign in.',
+        user: toSafeUser(newUser),
+      });
+      return;
+    }
 
     let challenge: OtpChallengeResponse;
     try {
