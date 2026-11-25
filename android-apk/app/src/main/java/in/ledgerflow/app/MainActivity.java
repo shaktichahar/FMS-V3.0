@@ -71,18 +71,10 @@ public class MainActivity extends AppCompatActivity {
                 .addPathHandler("/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .build();
 
-        String configuredUrl = BuildConfig.APP_URL != null ? BuildConfig.APP_URL.trim() : "";
-        if (!configuredUrl.isEmpty()
-                && (configuredUrl.startsWith("https://") || configuredUrl.startsWith("http://"))) {
-            entryUrl = configuredUrl;
-            Uri baseUri = Uri.parse(configuredUrl);
-            if (baseUri.getHost() != null) {
-                allowedAppHost = baseUri.getHost().toLowerCase(Locale.US);
-            }
-        } else {
-            entryUrl = BUNDLED_ENTRY_URL;
-            allowedAppHost = BUNDLED_HOST;
-        }
+        // Always boot the bundled LedgerFlow UI locally (zero blank screen / 503 errors).
+        // Live Cloud SQL / PostgreSQL sync is routed over HTTPS via BuildConfig.API_BASE_URL.
+        entryUrl = BUNDLED_ENTRY_URL;
+        allowedAppHost = BUNDLED_HOST;
 
         fileChooserLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
@@ -384,6 +376,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private class AndroidBridge {
+        @JavascriptInterface
+        public String getApiBaseUrl() {
+            String raw = BuildConfig.API_BASE_URL != null ? BuildConfig.API_BASE_URL.trim() : "";
+            while (raw.endsWith("/")) {
+                raw = raw.substring(0, raw.length() - 1);
+            }
+            return raw;
+        }
+
         @JavascriptInterface
         public boolean isOtpEmailConfigured() {
             String webhookUrl = BuildConfig.OTP_EMAIL_WEBHOOK_URL != null

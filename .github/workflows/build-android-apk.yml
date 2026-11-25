@@ -3,8 +3,8 @@ name: Build LedgerFlow Android APK
 on:
   workflow_dispatch:
     inputs:
-      app_url:
-        description: "Optional published HTTPS URL (leave blank to build a 100% self-contained standalone APK)"
+      api_base_url:
+        description: "Published HTTPS LedgerFlow backend URL for live Cloud SQL / PostgreSQL sync (overrides repo API_BASE_URL / APP_URL var)"
         required: false
         default: ""
       otp_email_webhook_url:
@@ -42,21 +42,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Resolve APK runtime mode
+      - name: Resolve Cloud SQL API Backend URL
         id: resolve_url
         shell: bash
         env:
-          INPUT_URL: ${{ github.event.inputs.app_url }}
-          VAR_URL: ${{ vars.APP_URL }}
+          INPUT_URL: ${{ github.event.inputs.api_base_url }}
+          VAR_API_URL: ${{ vars.API_BASE_URL }}
+          VAR_APP_URL: ${{ vars.APP_URL }}
         run: |
-          TARGET_URL="${INPUT_URL:-$VAR_URL}"
+          TARGET_URL="${INPUT_URL:-${VAR_API_URL:-$VAR_APP_URL}}"
+          TARGET_URL="${TARGET_URL%/}"
           echo "url=$TARGET_URL" >> "$GITHUB_OUTPUT"
           if [ -z "$TARGET_URL" ]; then
-            echo "mode=Standalone On-Device Bundled APK (Offline-Ready)" >> "$GITHUB_OUTPUT"
-            echo "Building LedgerFlow Android APK in Standalone Bundled Mode (no external server required)."
+            echo "mode=Bundled APK (On-Device Storage — connect Cloud SQL URL anytime in-app)" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK in Bundled Mode (no Cloud API_BASE_URL pre-configured)."
           else
-            echo "mode=Connected Server Mode ($TARGET_URL) with Standalone Fallback" >> "$GITHUB_OUTPUT"
-            echo "Building LedgerFlow Android APK for URL: $TARGET_URL"
+            echo "mode=Bundled APK + Live Cloud SQL / PostgreSQL Sync ($TARGET_URL)" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK connected live to Cloud SQL API: $TARGET_URL"
           fi
 
       - name: Set up Node.js 24
@@ -108,19 +110,21 @@ jobs:
         id: build_apk
         shell: bash
         env:
-          APP_URL: ${{ steps.resolve_url.outputs.url }}
+          API_BASE_URL: ${{ steps.resolve_url.outputs.url }}
           OTP_EMAIL_WEBHOOK_URL: ${{ github.event.inputs.otp_email_webhook_url || secrets.OTP_EMAIL_WEBHOOK_URL || vars.OTP_EMAIL_WEBHOOK_URL }}
           OTP_EMAIL_WEBHOOK_SECRET: ${{ secrets.OTP_EMAIL_WEBHOOK_SECRET }}
         run: |
-          if [ -n "$OTP_EMAIL_WEBHOOK_URL" ]; then
+          if [ -n "$API_BASE_URL" ]; then
+            echo "otp_status=Handled Live by Cloud SQL Backend ($API_BASE_URL)" >> "$GITHUB_OUTPUT"
+          elif [ -n "$OTP_EMAIL_WEBHOOK_URL" ]; then
             echo "otp_status=Configured (Live Registered Email OTP Enabled)" >> "$GITHUB_OUTPUT"
             echo "OTP Email Webhook: CONFIGURED"
           else
-            echo "otp_status=Password Sign-In Mode (Add OTP_EMAIL_WEBHOOK_URL in GitHub Secrets to enable Email OTP)" >> "$GITHUB_OUTPUT"
+            echo "otp_status=Password Sign-In Mode (Add API_BASE_URL for Cloud SQL sync or OTP_EMAIL_WEBHOOK_URL for Email OTP)" >> "$GITHUB_OUTPUT"
             echo "OTP Email Webhook: NOT CONFIGURED (APK will use Password Sign-In)"
           fi
           gradle -p android-apk assembleDebug \
-            -PAPP_URL="$APP_URL" \
+            -PAPI_BASE_URL="$API_BASE_URL" \
             -POTP_EMAIL_WEBHOOK_URL="$OTP_EMAIL_WEBHOOK_URL" \
             -POTP_EMAIL_WEBHOOK_SECRET="$OTP_EMAIL_WEBHOOK_SECRET" \
             --no-daemon

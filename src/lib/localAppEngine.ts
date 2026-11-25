@@ -489,6 +489,7 @@ function findUserByIdentifierLocal(db: LocalDatabaseState, identifier: string): 
 }
 
 interface LedgerFlowAndroidNativeBridge {
+  getApiBaseUrl?: () => string;
   isOtpEmailConfigured?: () => boolean;
   sendOtpEmail?: (
     requestId: string,

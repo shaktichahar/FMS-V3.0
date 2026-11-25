@@ -33,6 +33,8 @@ import type {
 
 export { isAndroidEmailOtpReady, isStandaloneAndroidRuntime };
 
+const CLOUD_API_URL_STORAGE_KEY = 'ledgerflow_cloud_api_url_v1';
+
 // Keep custom OTP session tokens strictly in JS memory (never localStorage/sessionStorage).
 let memoryToken: string | null = null;
 
@@ -42,6 +44,101 @@ export function getSessionToken(): string | null {
 
 export function setSessionToken(token: string | null): void {
   memoryToken = token;
+}
+
+function normalizeServerBaseUrl(raw?: string | null): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  if (!/^https?:\/\//i.test(trimmed)) return '';
+  return trimmed.replace(/\/+$/, '');
+}
+
+export function getCloudApiBaseUrl(): string {
+  if (!isStandaloneAndroidRuntime()) {
+    return '';
+  }
+  try {
+    const saved = window.localStorage.getItem(CLOUD_API_URL_STORAGE_KEY);
+    if (saved !== null) {
+      return normalizeServerBaseUrl(saved);
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  try {
+    const nativeUrl = window.LedgerFlowAndroid?.getApiBaseUrl?.();
+    if (nativeUrl) {
+      return normalizeServerBaseUrl(nativeUrl);
+    }
+  } catch {
+    // Ignore native bridge errors
+  }
+  const viteUrl = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+    ?.VITE_API_BASE_URL;
+  return normalizeServerBaseUrl(viteUrl);
+}
+
+export function setCloudApiBaseUrl(url: string | null): void {
+  try {
+    if (!url || !url.trim()) {
+      window.localStorage.setItem(CLOUD_API_URL_STORAGE_KEY, '');
+    } else {
+      const normalized = normalizeServerBaseUrl(url);
+      window.localStorage.setItem(CLOUD_API_URL_STORAGE_KEY, normalized);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  memoryToken = null;
+}
+
+export function isUsingCloudSqlApi(): boolean {
+  if (!isStandaloneAndroidRuntime()) return true;
+  return Boolean(getCloudApiBaseUrl());
+}
+
+export async function testCloudApiConnection(
+  rawUrl: string
+): Promise<{ ok: boolean; normalizedUrl: string; database?: string; error?: string }> {
+  const normalizedUrl = normalizeServerBaseUrl(rawUrl);
+  if (!normalizedUrl) {
+    return {
+      ok: false,
+      normalizedUrl: '',
+      error: 'Enter a valid https:// server URL (e.g. https://your-app.run.app).',
+    };
+  }
+  try {
+    const res = await fetch(`${normalizedUrl}/api/health`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok || data?.service !== 'ledgerflow') {
+      return {
+        ok: false,
+        normalizedUrl,
+        error: `Server responded with HTTP ${res.status} — make sure your published LedgerFlow backend is running.`,
+      };
+    }
+    return {
+      ok: true,
+      normalizedUrl,
+      database: typeof data.database === 'string' ? data.database : 'cloud-sql-postgresql',
+    };
+  } catch {
+    return {
+      ok: false,
+      normalizedUrl,
+      error: 'Unable to reach that server URL. Check your internet connection and verify the server is live.',
+    };
+  }
+}
+
+function buildApiUrl(path: string): string {
+  const base = getCloudApiBaseUrl();
+  if (!base) return path;
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 async function resolveBearerToken(): Promise<string | null> {
@@ -59,6 +156,7 @@ async function resolveBearerToken(): Promise<string | null> {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await resolveBearerToken();
+  const isCrossOriginApk = Boolean(getCloudApiBaseUrl());
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),
@@ -67,11 +165,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(path, {
-    credentials: 'same-origin',
+  const res = await fetch(buildApiUrl(path), {
+    credentials: isCrossOriginApk ? 'omit' : 'same-origin',
     ...options,
     headers,
   });
+
+  const refreshedToken = res.headers.get('X-Refreshed-Token');
+  if (refreshedToken) {
+    memoryToken = refreshedToken;
+  }
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -265,8 +368,9 @@ const remoteApi = {
 
   fetchSanctionPdfBlob: async (id: string): Promise<Blob> => {
     const token = await resolveBearerToken();
-    const res = await fetch(`/api/sanctions/${id}/attachment`, {
-      credentials: 'same-origin',
+    const isCrossOriginApk = Boolean(getCloudApiBaseUrl());
+    const res = await fetch(buildApiUrl(`/api/sanctions/${id}/attachment`), {
+      credentials: isCrossOriginApk ? 'omit' : 'same-origin',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
@@ -356,8 +460,9 @@ const remoteApi = {
     kind: 'cheque' | 'sanction'
   ): Promise<Blob> => {
     const token = await resolveBearerToken();
-    const res = await fetch(`/api/transactions/${id}/attachments/${kind}`, {
-      credentials: 'same-origin',
+    const isCrossOriginApk = Boolean(getCloudApiBaseUrl());
+    const res = await fetch(buildApiUrl(`/api/transactions/${id}/attachments/${kind}`), {
+      credentials: isCrossOriginApk ? 'omit' : 'same-origin',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
@@ -452,4 +557,9 @@ const remoteApi = {
     }),
 };
 
-export const api: typeof remoteApi = isStandaloneAndroidRuntime() ? localAppEngine : remoteApi;
+export const api: typeof remoteApi = new Proxy(remoteApi, {
+  get(_target, prop, receiver) {
+    const activeBackend = isUsingCloudSqlApi() ? remoteApi : localAppEngine;
+    return Reflect.get(activeBackend, prop, receiver);
+  },
+});

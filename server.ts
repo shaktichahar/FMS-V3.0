@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import express, { type Request, type Response, type NextFunction } from 'express';
+import { databaseMode } from './src/db/index.ts';
 import { adminAuth } from './src/lib/firebase-admin.ts';
 import {
   ADMIN_GMAIL,
@@ -781,8 +782,32 @@ function buildAnalytics(
 const app = express();
 app.use(express.json({ limit: '25mb' }));
 
+// Allow bundled Android APK WebView (https://appassets.androidplatform.net) to talk live to Cloud SQL APIs
+const ALLOWED_MOBILE_ORIGINS = new Set([
+  'https://appassets.androidplatform.net',
+  'http://localhost',
+  'https://localhost',
+  'capacitor://localhost',
+]);
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_MOBILE_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Expose-Headers', 'X-Refreshed-Token, Content-Disposition');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+  }
+  next();
+});
+
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ ok: true, service: 'ledgerflow' });
+  res.json({ ok: true, service: 'ledgerflow', database: databaseMode });
 });
 
 async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -823,10 +848,11 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
       req.sessionLoginAt = decoded.loginAt;
       req.sessionLastActivity = decoded.lastActivity;
 
-      // Refresh sliding inactivity cookie periodically on authenticated requests
+      // Refresh sliding inactivity cookie & Bearer token periodically on authenticated requests
       if (idleMs > 15_000 || !cookieToken) {
         const refreshed = issueUserSession(req, res, found, decoded.loginAt);
         req.sessionLastActivity = refreshed.lastActivity;
+        res.setHeader('X-Refreshed-Token', refreshed.token);
       }
       next();
       return;

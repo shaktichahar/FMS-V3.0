@@ -16,6 +16,9 @@ declare global {
 const EMBEDDED_SNAPSHOT_PATH = path.resolve(process.cwd(), 'data', 'embedded_db_snapshot.json');
 
 function hasReachableCloudSqlHost(): boolean {
+  if (process.env.DATABASE_URL?.trim()) {
+    return true;
+  }
   const sqlHost = process.env.SQL_HOST?.trim();
   if (!sqlHost) return false;
   if (sqlHost.startsWith('/')) {
@@ -30,17 +33,33 @@ function hasReachableCloudSqlHost(): boolean {
 
 const useCloudSql = hasReachableCloudSqlHost();
 export const isEmbeddedDatabase = !useCloudSql;
+export const databaseMode: 'cloud-sql-postgresql' | 'embedded-pglite' = useCloudSql
+  ? 'cloud-sql-postgresql'
+  : 'embedded-pglite';
 
 export const createPool = () => {
   if (!global._postgresPool) {
-    global._postgresPool = new Pool({
-      host: process.env.SQL_HOST,
-      user: process.env.SQL_USER,
-      password: process.env.SQL_PASSWORD,
-      database: process.env.SQL_DB_NAME,
-      max: 10,
-      connectionTimeoutMillis: 15000,
-    });
+    const connectionString = process.env.DATABASE_URL?.trim();
+    if (connectionString) {
+      const requiresSsl =
+        !/localhost|127\.0\.0\.1/i.test(connectionString) &&
+        !/sslmode=disable/i.test(connectionString);
+      global._postgresPool = new Pool({
+        connectionString,
+        ssl: requiresSsl ? { rejectUnauthorized: false } : undefined,
+        max: 10,
+        connectionTimeoutMillis: 15000,
+      });
+    } else {
+      global._postgresPool = new Pool({
+        host: process.env.SQL_HOST,
+        user: process.env.SQL_USER,
+        password: process.env.SQL_PASSWORD,
+        database: process.env.SQL_DB_NAME,
+        max: 10,
+        connectionTimeoutMillis: 15000,
+      });
+    }
 
     global._postgresPool.on('error', (err) => {
       console.error('Unexpected error on idle SQL pool client:', err);
@@ -159,8 +178,24 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 `;
 
+declare global {
+  var _pgSchemaReadyPromise: Promise<void> | undefined;
+}
+
 export async function ensureDatabaseReady(): Promise<void> {
-  if (useCloudSql) return;
+  if (useCloudSql) {
+    if (!global._pgSchemaReadyPromise) {
+      global._pgSchemaReadyPromise = (async () => {
+        try {
+          await createPool().query(EMBEDDED_SCHEMA_DDL);
+        } catch (error) {
+          global._pgSchemaReadyPromise = undefined;
+          throw error;
+        }
+      })();
+    }
+    return global._pgSchemaReadyPromise;
+  }
   if (!global._pgliteSchemaReadyPromise) {
     global._pgliteSchemaReadyPromise = (async () => {
       try {

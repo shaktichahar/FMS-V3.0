@@ -4,6 +4,8 @@ plugins {
 
 def configuredAppUrl = (project.findProperty("APP_URL") ?: System.getenv("APP_URL") ?: "").toString().trim()
 def escapedAppUrl = configuredAppUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+def configuredApiBaseUrl = (project.findProperty("API_BASE_URL") ?: System.getenv("API_BASE_URL") ?: configuredAppUrl).toString().trim()
+def escapedApiBaseUrl = configuredApiBaseUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 def configuredOtpWebhookUrl = (project.findProperty("OTP_EMAIL_WEBHOOK_URL") ?: System.getenv("OTP_EMAIL_WEBHOOK_URL") ?: "").toString().trim()
 def escapedOtpWebhookUrl = configuredOtpWebhookUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 def configuredOtpWebhookSecret = (project.findProperty("OTP_EMAIL_WEBHOOK_SECRET") ?: System.getenv("OTP_EMAIL_WEBHOOK_SECRET") ?: "").toString().trim()
@@ -17,10 +19,11 @@ android {
         applicationId = 'in.ledgerflow.app'
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
+        versionCode = 7
         versionName = '2.0.0'
 
         buildConfigField 'String', 'APP_URL', "\"${escapedAppUrl}\""
+        buildConfigField 'String', 'API_BASE_URL', "\"${escapedApiBaseUrl}\""
         buildConfigField 'String', 'OTP_EMAIL_WEBHOOK_URL', "\"${escapedOtpWebhookUrl}\""
         buildConfigField 'String', 'OTP_EMAIL_WEBHOOK_SECRET', "\"${escapedOtpWebhookSecret}\""
     }
