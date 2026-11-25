@@ -48,14 +48,22 @@ jobs:
         env:
           INPUT_URL: ${{ github.event.inputs.api_base_url }}
           VAR_API_URL: ${{ vars.API_BASE_URL }}
+          SECRET_API_URL: ${{ secrets.API_BASE_URL }}
           VAR_APP_URL: ${{ vars.APP_URL }}
+          SECRET_APP_URL: ${{ secrets.APP_URL }}
           DEFAULT_URL: "https://ais-pre-mon76kn4wttmrf7tqaxi6e-616579702543.asia-northeast1.run.app"
         run: |
-          TARGET_URL="${INPUT_URL:-${VAR_API_URL:-${VAR_APP_URL:-$DEFAULT_URL}}}"
+          TARGET_URL="${INPUT_URL:-${VAR_API_URL:-${SECRET_API_URL:-${VAR_APP_URL:-${SECRET_APP_URL:-$DEFAULT_URL}}}}}"
           TARGET_URL="${TARGET_URL%/}"
           echo "url=$TARGET_URL" >> "$GITHUB_OUTPUT"
-          echo "mode=Bundled APK + Auto-Connected Live Cloud SQL / PostgreSQL ($TARGET_URL)" >> "$GITHUB_OUTPUT"
-          echo "Building LedgerFlow Android APK auto-connected live to Cloud SQL API: $TARGET_URL"
+          HEALTH_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "${TARGET_URL}/api/health" || echo "000")
+          if [ "$HEALTH_STATUS" = "200" ]; then
+            echo "mode=Bundled APK + Live Cloud SQL / PostgreSQL (${TARGET_URL} — HTTP 200 OK)" >> "$GITHUB_OUTPUT"
+            echo "Verified Cloud SQL API backend is LIVE (HTTP 200): $TARGET_URL"
+          else
+            echo "mode=Bundled APK + Cloud SQL API (${TARGET_URL} — Warning: HTTP ${HEALTH_STATUS} at build time)" >> "$GITHUB_OUTPUT"
+            echo "::warning::Backend ${TARGET_URL}/api/health returned HTTP ${HEALTH_STATUS}. Make sure your Cloud Run app is deployed and API_BASE_URL is set to the deployed https://...run.app URL."
+          fi
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v5

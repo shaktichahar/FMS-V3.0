@@ -90,6 +90,88 @@ async function resolveBearerToken(): Promise<string | null> {
   return null;
 }
 
+interface NativeApiBridgeResponse {
+  status: number;
+  contentType: string;
+  body: string;
+  refreshedToken: string;
+  error: string;
+}
+
+const pendingNativeApiRequests = new Map<
+  string,
+  { resolve: (res: NativeApiBridgeResponse) => void; reject: (err: Error) => void; timer: number }
+>();
+
+function getNativeApiRequestFn():
+  | ((requestId: string, method: string, url: string, headersJson: string, body: string) => void)
+  | null {
+  if (typeof window === 'undefined') return null;
+  const bridge = window.LedgerFlowAndroid as
+    | (typeof window.LedgerFlowAndroid & {
+        apiRequest?: (
+          requestId: string,
+          method: string,
+          url: string,
+          headersJson: string,
+          body: string
+        ) => void;
+      })
+    | undefined;
+  return bridge && typeof bridge.apiRequest === 'function' ? bridge.apiRequest.bind(bridge) : null;
+}
+
+function ensureNativeApiCallbackRegistered(): void {
+  if (typeof window === 'undefined') return;
+  const win = window as unknown as {
+    __lfOnApiResult?: (requestId: string, result: NativeApiBridgeResponse) => void;
+  };
+  if (win.__lfOnApiResult) return;
+  win.__lfOnApiResult = (requestId: string, result: NativeApiBridgeResponse) => {
+    const entry = pendingNativeApiRequests.get(requestId);
+    if (!entry) return;
+    window.clearTimeout(entry.timer);
+    pendingNativeApiRequests.delete(requestId);
+    entry.resolve(result);
+  };
+}
+
+function nativeAndroidRequest(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body: string
+): Promise<NativeApiBridgeResponse> {
+  const apiRequestFn = getNativeApiRequestFn();
+  if (!apiRequestFn) {
+    return Promise.reject(new Error('Native bridge unavailable'));
+  }
+  ensureNativeApiCallbackRegistered();
+  const requestId = `api-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return new Promise<NativeApiBridgeResponse>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingNativeApiRequests.delete(requestId);
+      reject(new Error('Request timed out while contacting Cloud SQL server.'));
+    }, 30000);
+    pendingNativeApiRequests.set(requestId, { resolve, reject, timer });
+    try {
+      apiRequestFn(requestId, method, url, JSON.stringify(headers), body);
+    } catch (err) {
+      window.clearTimeout(timer);
+      pendingNativeApiRequests.delete(requestId);
+      reject(err instanceof Error ? err : new Error('Unable to invoke native HTTPS request.'));
+    }
+  });
+}
+
+function extractHostLabel(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 async function fetchWithColdStartRetry(url: string, init: RequestInit): Promise<Response> {
   const maxAttempts = 2;
   let lastError: unknown = null;
@@ -118,6 +200,8 @@ async function fetchWithColdStartRetry(url: string, init: RequestInit): Promise<
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await resolveBearerToken();
   const isCrossOriginApk = Boolean(getCloudApiBaseUrl());
+  const fullUrl = buildApiUrl(path);
+  const hostLabel = isCrossOriginApk ? extractHostLabel(fullUrl) : 'this server';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),
@@ -126,16 +210,74 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
+  // Prefer native Android HTTPS bridge inside the APK (zero CORS preflight failures)
+  if (isCrossOriginApk && getNativeApiRequestFn()) {
+    const method = (options.method || 'GET').toUpperCase();
+    const bodyStr = typeof options.body === 'string' ? options.body : '';
+    let nativeRes = await nativeAndroidRequest(fullUrl, method, headers, bodyStr);
+    if (nativeRes.status === 502 || nativeRes.status === 503 || nativeRes.status === 504) {
+      await new Promise((r) => setTimeout(r, 1500));
+      nativeRes = await nativeAndroidRequest(fullUrl, method, headers, bodyStr);
+    }
+
+    if (nativeRes.refreshedToken) {
+      memoryToken = nativeRes.refreshedToken;
+    }
+
+    if (nativeRes.status === 0) {
+      throw new Error(
+        `Unable to reach live server (${hostLabel}): ${nativeRes.error || 'Check your internet connection.'}`
+      );
+    }
+
+    if (nativeRes.status === 301 || nativeRes.status === 302 || nativeRes.status === 303 || nativeRes.status === 307) {
+      throw new Error(
+        `Server (${hostLabel}) requires browser login (HTTP ${nativeRes.status}). Deploy LedgerFlow to a public Cloud Run URL and set API_BASE_URL in GitHub Settings, then rebuild the APK.`
+      );
+    }
+
+    if (nativeRes.status === 502 || nativeRes.status === 503 || nativeRes.status === 504) {
+      throw new Error(
+        `Server (${hostLabel}) is currently offline (HTTP ${nativeRes.status}). Deploy LedgerFlow to Cloud Run and set its public https://...run.app URL as API_BASE_URL in GitHub Settings, then rebuild the APK.`
+      );
+    }
+
+    const isJson = nativeRes.contentType.includes('application/json');
+    let parsed: Record<string, unknown> = {};
+    if (isJson || nativeRes.body.trim().startsWith('{') || nativeRes.body.trim().startsWith('[')) {
+      try {
+        parsed = JSON.parse(nativeRes.body) as Record<string, unknown>;
+      } catch {
+        parsed = {};
+      }
+    }
+
+    if (nativeRes.status < 200 || nativeRes.status >= 300) {
+      throw new Error(
+        (typeof parsed.error === 'string' && parsed.error) ||
+          `Server (${hostLabel}) returned HTTP ${nativeRes.status}.`
+      );
+    }
+
+    if (!isJson && !nativeRes.body.trim().startsWith('{') && !nativeRes.body.trim().startsWith('[')) {
+      throw new Error(
+        `Server (${hostLabel}) returned HTML instead of API JSON. Set API_BASE_URL to your deployed Cloud Run URL and rebuild the APK.`
+      );
+    }
+
+    return parsed as T;
+  }
+
   let res: Response;
   try {
-    res = await fetchWithColdStartRetry(buildApiUrl(path), {
+    res = await fetchWithColdStartRetry(fullUrl, {
       credentials: isCrossOriginApk ? 'omit' : 'same-origin',
       ...options,
       headers,
     });
   } catch {
     throw new Error(
-      'Live Cloud SQL server is offline or blocked (503/CORS). Deploy the LedgerFlow web app to Cloud Run (or click Share/Deploy in AI Studio), set its public URL in API_BASE_URL if needed, and retry.'
+      `Live server (${hostLabel}) is offline or unreachable (503/CORS). Deploy LedgerFlow to Cloud Run, set its public https://...run.app URL in GitHub API_BASE_URL, and rebuild the APK.`
     );
   }
 
@@ -150,16 +292,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     if (res.status === 503 || res.status === 502 || res.status === 504) {
       throw new Error(
-        'Live Cloud SQL server is currently offline (HTTP ' +
-          res.status +
-          '). Please publish/deploy the LedgerFlow web app and try again.'
+        `Live server (${hostLabel}) is currently offline (HTTP ${res.status}). Deploy LedgerFlow to Cloud Run and set API_BASE_URL to its live URL.`
       );
     }
     throw new Error(data?.error || `Request failed (${res.status})`);
   }
   if (!isJson) {
     throw new Error(
-      'Live Cloud SQL server returned a login/HTML page instead of API data. Deploy LedgerFlow to a public Cloud Run URL and rebuild the APK with API_BASE_URL set.'
+      `Server (${hostLabel}) returned HTML instead of API data. Deploy LedgerFlow to a public Cloud Run URL and rebuild the APK with API_BASE_URL set.`
     );
   }
   return data as T;

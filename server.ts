@@ -794,13 +794,22 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Background-Sync');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Background-Sync, X-HTTP-Method-Override'
+    );
     res.setHeader('Access-Control-Expose-Headers', 'X-Refreshed-Token, Content-Disposition');
     res.setHeader('Access-Control-Max-Age', '86400');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
     }
+  }
+  if (
+    req.method === 'POST' &&
+    String(req.headers['x-http-method-override'] || '').toUpperCase() === 'PATCH'
+  ) {
+    req.method = 'PATCH';
   }
   next();
 });

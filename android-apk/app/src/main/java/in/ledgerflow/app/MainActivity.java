@@ -47,8 +47,10 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.ProtocolException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,6 +70,7 @@ public class MainActivity extends AppCompatActivity {
     private WebChromeClient.FileChooserParams pendingFileChooserParams;
     private WebViewAssetLoader assetLoader;
     private final ExecutorService emailExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService apiExecutor = Executors.newCachedThreadPool();
     private String allowedAppHost = BUNDLED_HOST;
     private String entryUrl = BUNDLED_ENTRY_URL;
 
@@ -482,6 +485,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         emailExecutor.shutdownNow();
+        apiExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -524,6 +528,36 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void notifyApiResult(
+            String requestId,
+            int status,
+            String contentType,
+            String body,
+            String refreshedToken,
+            String errorMessage
+    ) {
+        runOnUiThread(() -> {
+            if (webView == null) {
+                return;
+            }
+            try {
+                JSONObject payload = new JSONObject();
+                payload.put("status", status);
+                payload.put("contentType", contentType != null ? contentType : "");
+                payload.put("body", body != null ? body : "");
+                payload.put("refreshedToken", refreshedToken != null ? refreshedToken : "");
+                payload.put("error", errorMessage != null ? errorMessage : "");
+                String js = "if(window.__lfOnApiResult){window.__lfOnApiResult("
+                        + JSONObject.quote(requestId != null ? requestId : "") + ","
+                        + payload.toString()
+                        + ");}";
+                webView.evaluateJavascript(js, null);
+            } catch (Exception ignored) {
+                // Ignore serialization errors
+            }
+        });
+    }
+
     private class AndroidBridge {
         @JavascriptInterface
         public String getApiBaseUrl() {
@@ -532,6 +566,84 @@ public class MainActivity extends AppCompatActivity {
                 raw = raw.substring(0, raw.length() - 1);
             }
             return raw;
+        }
+
+        @JavascriptInterface
+        public void apiRequest(
+                String requestId,
+                String method,
+                String urlStr,
+                String headersJson,
+                String bodyStr
+        ) {
+            apiExecutor.execute(() -> {
+                HttpURLConnection conn = null;
+                try {
+                    String safeMethod = (method == null || method.trim().isEmpty())
+                            ? "GET"
+                            : method.trim().toUpperCase(Locale.US);
+                    if (urlStr == null || !urlStr.startsWith("https://")) {
+                        notifyApiResult(requestId, 0, "", "", "", "Invalid HTTPS API URL.");
+                        return;
+                    }
+
+                    conn = (HttpURLConnection) new URL(urlStr).openConnection();
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(25000);
+
+                    try {
+                        conn.setRequestMethod(safeMethod);
+                    } catch (ProtocolException pe) {
+                        if ("PATCH".equals(safeMethod)) {
+                            conn.setRequestMethod("POST");
+                            conn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+                        } else {
+                            throw pe;
+                        }
+                    }
+
+                    conn.setRequestProperty("Accept", "application/json");
+                    if (headersJson != null && !headersJson.trim().isEmpty()) {
+                        JSONObject hdrs = new JSONObject(headersJson);
+                        Iterator<String> keys = hdrs.keys();
+                        while (keys.hasNext()) {
+                            String k = keys.next();
+                            String v = hdrs.optString(k, "");
+                            if (k != null && !k.isEmpty() && !v.isEmpty()) {
+                                conn.setRequestProperty(k, v);
+                            }
+                        }
+                    }
+
+                    if (bodyStr != null && !bodyStr.isEmpty()
+                            && ("POST".equals(safeMethod)
+                            || "PUT".equals(safeMethod)
+                            || "PATCH".equals(safeMethod)
+                            || "DELETE".equals(safeMethod))) {
+                        conn.setDoOutput(true);
+                        byte[] bytes = bodyStr.getBytes(StandardCharsets.UTF_8);
+                        try (OutputStream os = conn.getOutputStream()) {
+                            os.write(bytes);
+                            os.flush();
+                        }
+                    }
+
+                    int status = conn.getResponseCode();
+                    String contentType = conn.getContentType();
+                    String refreshedToken = conn.getHeaderField("X-Refreshed-Token");
+                    InputStream stream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+                    String respBody = readStream(stream);
+                    notifyApiResult(requestId, status, contentType, respBody, refreshedToken, "");
+                } catch (Exception e) {
+                    String msg = e.getMessage() != null ? e.getMessage() : "Network error";
+                    notifyApiResult(requestId, 0, "", "", "", msg);
+                } finally {
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            });
         }
 
         @JavascriptInterface
