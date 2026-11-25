@@ -1,11 +1,9 @@
 import { auth } from './firebase';
 import {
   isAndroidEmailOtpReady,
-  isAndroidSmsPermissionGranted,
   isStandaloneAndroidRuntime,
   localAppEngine,
   loginStandaloneWithPasswordOnly,
-  requestAndroidDevicePermissions,
 } from './localAppEngine';
 import type {
   AnalyticsSummary,
@@ -36,10 +34,8 @@ import type {
 
 export {
   isAndroidEmailOtpReady,
-  isAndroidSmsPermissionGranted,
   isStandaloneAndroidRuntime,
   loginStandaloneWithPasswordOnly,
-  requestAndroidDevicePermissions,
 };
 
 const CLOUD_API_URL_STORAGE_KEY = 'ledgerflow_cloud_api_url_v1';

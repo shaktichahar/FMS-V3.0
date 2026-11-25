@@ -97,28 +97,6 @@ export function isAndroidEmailOtpReady(): boolean {
   }
 }
 
-export function isAndroidSmsPermissionGranted(): boolean {
-  if (typeof window === 'undefined') return false;
-  const bridge = window.LedgerFlowAndroid;
-  if (!bridge || typeof bridge.hasSmsPermission !== 'function') {
-    return false;
-  }
-  try {
-    return Boolean(bridge.hasSmsPermission());
-  } catch {
-    return false;
-  }
-}
-
-export function requestAndroidDevicePermissions(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.LedgerFlowAndroid?.requestDevicePermissions?.();
-  } catch {
-    // Ignore native bridge errors
-  }
-}
-
 function uid(prefix: string): string {
   const rand =
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -513,10 +491,8 @@ function findUserByIdentifierLocal(db: LocalDatabaseState, identifier: string): 
 interface LedgerFlowAndroidNativeBridge {
   getApiBaseUrl?: () => string;
   isOtpEmailConfigured?: () => boolean;
-  hasSmsPermission?: () => boolean;
-  requestDevicePermissions?: () => void;
-  sendSmsOtp?: (toMobile: string, message: string) => boolean;
-  openSmsComposer?: (toMobile: string, message: string) => void;
+  hasCameraPermission?: () => boolean;
+  requestCameraPermission?: () => void;
   sendOtpEmail?: (
     requestId: string,
     toEmail: string,
@@ -526,12 +502,6 @@ interface LedgerFlowAndroidNativeBridge {
     purpose: string
   ) => void;
 }
-
-const DEMO_PLACEHOLDER_MOBILES = new Set([
-  '+919876543210',
-  '+919811002233',
-  '+919822004455',
-]);
 
 declare global {
   interface Window {
@@ -571,7 +541,7 @@ async function deliverEmailOtpFromDevice(params: {
   if (bridge && typeof bridge.sendOtpEmail === 'function') {
     if (typeof bridge.isOtpEmailConfigured === 'function' && !bridge.isOtpEmailConfigured()) {
       throw new Error(
-        'Email OTP delivery is not configured for this APK yet. Connect Cloud SQL below or add OTP_EMAIL_WEBHOOK_URL in GitHub Repository Secrets and rebuild the APK.'
+        'Email OTP delivery is not configured for standalone mode yet. Connect Cloud SQL below, configure OTP_EMAIL_WEBHOOK_URL in GitHub Secrets, or use "Sign in directly with Password" below.'
       );
     }
     ensureAndroidEmailCallbackRegistered();
@@ -604,85 +574,28 @@ async function deliverEmailOtpFromDevice(params: {
   );
 }
 
-function isRealMobileNumber(rawMobile: string): boolean {
-  const normalized = normalizeMobile(rawMobile);
-  if (!normalized || DEMO_PLACEHOLDER_MOBILES.has(normalized)) return false;
-  const digits = normalized.replace(/\D/g, '');
-  return digits.length >= 10 && digits.length <= 15;
-}
-
 async function createOtpChallengeForUser(
   user: LocalUserRecord,
   purpose: 'login' | 'direct-otp' | 'register'
 ): Promise<OtpChallengeResponse> {
   const cleanEmail = normalizeEmail(user.email || user.username);
-  const hasValidEmail = Boolean(cleanEmail && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail));
-  const cleanMobile = normalizeMobile(user.mobile);
-  const hasRealMobile = isRealMobileNumber(cleanMobile);
-
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const smsBody = `LedgerFlow OTP: ${code}. Valid for 5 minutes. Do not share this code with anyone.`;
-  const bridge = typeof window !== 'undefined' ? window.LedgerFlowAndroid : undefined;
-
-  let emailSent = false;
-  let smsSent = false;
-
-  if (isAndroidEmailOtpReady() && hasValidEmail) {
-    await deliverEmailOtpFromDevice({
-      toEmail: cleanEmail,
-      fullName: user.fullName,
-      loginIdentifier: user.username,
-      otp: code,
-      purpose,
-    });
-    emailSent = true;
-    if (
-      purpose !== 'register' &&
-      hasRealMobile &&
-      bridge &&
-      typeof bridge.hasSmsPermission === 'function' &&
-      bridge.hasSmsPermission() &&
-      typeof bridge.sendSmsOtp === 'function'
-    ) {
-      try {
-        smsSent = Boolean(bridge.sendSmsOtp(cleanMobile, smsBody));
-      } catch {
-        smsSent = false;
-      }
-    }
-  } else if (purpose !== 'register' && hasRealMobile && bridge && typeof bridge.sendSmsOtp === 'function') {
-    const hadPermission =
-      typeof bridge.hasSmsPermission === 'function' ? Boolean(bridge.hasSmsPermission()) : false;
-    const sent = Boolean(bridge.sendSmsOtp(cleanMobile, smsBody));
-    if (!sent) {
-      if (!hadPermission) {
-        throw new Error(
-          'SMS permission is required to send OTP via Messages. Tap "Allow" on the permission popup, then tap "Send Verification OTP" again.'
-        );
-      }
-      throw new Error(
-        'Unable to send SMS OTP from this device. Check SIM/network signal or connect Cloud SQL below for Email OTP.'
-      );
-    }
-    smsSent = true;
-  } else {
-    if (!hasValidEmail && !hasRealMobile) {
-      throw new Error(
-        'No valid registered email or mobile number is linked to this account. Please contact your administrator.'
-      );
-    }
-    if (purpose === 'register') {
-      throw new Error(
-        'Email OTP delivery is not configured for this APK yet. Connect Cloud SQL below or add OTP_EMAIL_WEBHOOK_URL in GitHub Repository Secrets and rebuild the APK.'
-      );
-    }
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
     throw new Error(
-      'OTP delivery is not configured for standalone mode yet. Connect Cloud SQL below (or add OTP_EMAIL_WEBHOOK_URL in GitHub Secrets) for Email OTP, update your real mobile number in your profile for SMS OTP, or use "Sign in directly with Password" below.'
+      'No valid registered email address is linked to this account. Please contact your administrator.'
     );
   }
 
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  await deliverEmailOtpFromDevice({
+    toEmail: cleanEmail,
+    fullName: user.fullName,
+    loginIdentifier: user.username,
+    otp: code,
+    purpose,
+  });
+
   const id = uid('otp');
-  const mEmail = hasValidEmail ? maskEmail(cleanEmail) : null;
+  const mEmail = maskEmail(cleanEmail);
   const mMobile = maskMobile(user.mobile);
   const challenge: LocalOtpChallenge = {
     id,
@@ -697,17 +610,6 @@ async function createOtpChallengeForUser(
   };
   activeOtpChallenges.set(id, challenge);
 
-  const channels: ('email' | 'mobile')[] = [];
-  if (emailSent) channels.push('email');
-  if (smsSent) channels.push('mobile');
-
-  const notice =
-    emailSent && smsSent
-      ? `OTP sent to your registered email (${mEmail || cleanEmail}) and via SMS to ${mMobile || cleanMobile}.`
-      : emailSent
-        ? `OTP sent to your registered email (${mEmail || cleanEmail}). Please check your inbox (and spam folder).`
-        : `OTP sent via SMS to your registered mobile (${mMobile || cleanMobile}). Please check your Messages app.`;
-
   return {
     otpRequired: true,
     purpose,
@@ -717,11 +619,11 @@ async function createOtpChallengeForUser(
     expiresInSeconds: 300,
     resendCooldownSeconds: 30,
     delivery: {
-      emailSent,
-      smsSent,
+      emailSent: true,
+      smsSent: false,
       mode: 'live',
-      channels,
-      notice,
+      channels: ['email'],
+      notice: `OTP sent to your registered email (${mEmail || cleanEmail}). Please check your inbox (and spam folder).`,
     },
   };
 }
