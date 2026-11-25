@@ -88,6 +88,7 @@ export default function App() {
 
   const lastActivityRef = useRef<number>(Date.now());
   const lastPingRef = useRef<number>(Date.now());
+  const lastSyncVersionRef = useRef<string | null>(null);
 
   // Domain Data
   const [budgetHeads, setBudgetHeads] = useState<BudgetHeadEnriched[]>([]);
@@ -111,35 +112,48 @@ export default function App() {
     setImportModalOpen(true);
   };
 
-  const fetchAllData = useCallback(async (currentUser: SafeUser) => {
-    setDataLoading(true);
-    setDataError(null);
-    try {
-      const requests: Promise<unknown>[] = [
-        api.getBudgetHeads(),
-        api.getSanctions(),
-        api.getTransactions(),
-        api.getAnalytics(0),
-      ];
-      if (currentUser.role === 'admin') {
-        requests.push(api.getUsers());
+  const fetchAllData = useCallback(
+    async (currentUser: SafeUser, options?: { silent?: boolean }) => {
+      const silent = Boolean(options?.silent);
+      if (!silent) {
+        setDataLoading(true);
+        setDataError(null);
       }
-      const results = await Promise.all(requests);
-      setBudgetHeads((results[0] as { budgetHeads: BudgetHeadEnriched[] }).budgetHeads);
-      setSanctions((results[1] as { sanctions: BudgetSanctionEnriched[] }).sanctions);
-      setTransactions((results[2] as { transactions: TransactionEnriched[] }).transactions);
-      setAnalytics((results[3] as { analytics: AnalyticsSummary }).analytics);
-      if (currentUser.role === 'admin' && results[4]) {
-        setUsers((results[4] as { users: UserWithStats[] }).users);
-      } else {
-        setUsers([]);
+      try {
+        const requests: Promise<unknown>[] = [
+          api.getBudgetHeads(),
+          api.getSanctions(),
+          api.getTransactions(),
+          api.getAnalytics(0),
+        ];
+        if (currentUser.role === 'admin') {
+          requests.push(api.getUsers());
+        }
+        const results = await Promise.all(requests);
+        setBudgetHeads((results[0] as { budgetHeads: BudgetHeadEnriched[] }).budgetHeads);
+        setSanctions((results[1] as { sanctions: BudgetSanctionEnriched[] }).sanctions);
+        setTransactions((results[2] as { transactions: TransactionEnriched[] }).transactions);
+        setAnalytics((results[3] as { analytics: AnalyticsSummary }).analytics);
+        if (currentUser.role === 'admin' && results[4]) {
+          setUsers((results[4] as { users: UserWithStats[] }).users);
+        } else {
+          setUsers([]);
+        }
+        if (!silent) {
+          setDataError(null);
+        }
+      } catch (err) {
+        if (!silent) {
+          setDataError(err instanceof Error ? err.message : 'Unable to sync financial records.');
+        }
+      } finally {
+        if (!silent) {
+          setDataLoading(false);
+        }
       }
-    } catch (err) {
-      setDataError(err instanceof Error ? err.message : 'Unable to sync financial records.');
-    } finally {
-      setDataLoading(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   const handleSignOut = useCallback((notice?: string) => {
     setSessionToken(null);
@@ -151,6 +165,7 @@ export default function App() {
     }
     void api.logout().catch(() => {});
     void signOut(auth).catch(() => {});
+    lastSyncVersionRef.current = null;
     setUser(null);
     setLoginAt(null);
     setSessionNotice(notice || null);
@@ -293,6 +308,64 @@ export default function App() {
       window.clearInterval(interval);
     };
   }, [user, handleSignOut]);
+
+  // Live Cloud SQL auto-sync: reflects updates made on Mobile APK or Webapp within seconds
+  useEffect(() => {
+    if (!user) {
+      lastSyncVersionRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    let checking = false;
+
+    const checkLiveUpdates = async () => {
+      if (cancelled || checking) return;
+      if (document.visibilityState !== 'visible') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      checking = true;
+      try {
+        const { version } = await api.getSyncVersion();
+        if (cancelled || !version) return;
+        if (lastSyncVersionRef.current === null) {
+          lastSyncVersionRef.current = version;
+          return;
+        }
+        if (version !== lastSyncVersionRef.current) {
+          lastSyncVersionRef.current = version;
+          await fetchAllData(user, { silent: true });
+        }
+      } catch {
+        // Silent retry on next cycle
+      } finally {
+        checking = false;
+      }
+    };
+
+    void checkLiveUpdates();
+
+    const interval = window.setInterval(() => {
+      void checkLiveUpdates();
+    }, 4000);
+
+    const handleResumeSync = () => {
+      if (document.visibilityState === 'visible') {
+        void checkLiveUpdates();
+      }
+    };
+
+    window.addEventListener('focus', handleResumeSync);
+    window.addEventListener('online', handleResumeSync);
+    document.addEventListener('visibilitychange', handleResumeSync);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleResumeSync);
+      window.removeEventListener('online', handleResumeSync);
+      document.removeEventListener('visibilitychange', handleResumeSync);
+    };
+  }, [user, fetchAllData]);
 
   // Watch Google Drive OAuth state & auto-sync any daily 00:00 hrs IST backups when Admin Drive is connected
   useEffect(() => {

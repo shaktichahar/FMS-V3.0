@@ -1,10 +1,5 @@
 import { auth } from './firebase';
-import {
-  isAndroidEmailOtpReady,
-  isStandaloneAndroidRuntime,
-  localAppEngine,
-  loginStandaloneWithPasswordOnly,
-} from './localAppEngine';
+import { isStandaloneAndroidRuntime } from './localAppEngine';
 import type {
   AnalyticsSummary,
   BackupCounts,
@@ -32,13 +27,11 @@ import type {
   WorkbookImportResult,
 } from '../types/finance';
 
-export {
-  isAndroidEmailOtpReady,
-  isStandaloneAndroidRuntime,
-  loginStandaloneWithPasswordOnly,
-};
+export { isStandaloneAndroidRuntime };
 
-const CLOUD_API_URL_STORAGE_KEY = 'ledgerflow_cloud_api_url_v1';
+// Default published LedgerFlow Cloud Run backend (auto-connected to Cloud SQL / PostgreSQL)
+const DEFAULT_CLOUD_API_BASE_URL =
+  'https://ais-pre-mon76kn4wttmrf7tqaxi6e-616579702543.asia-northeast1.run.app';
 
 // Keep custom OTP session tokens strictly in JS memory (never localStorage/sessionStorage).
 let memoryToken: string | null = null;
@@ -63,81 +56,19 @@ export function getCloudApiBaseUrl(): string {
     return '';
   }
   try {
-    const saved = window.localStorage.getItem(CLOUD_API_URL_STORAGE_KEY);
-    if (saved !== null) {
-      return normalizeServerBaseUrl(saved);
-    }
-  } catch {
-    // Ignore storage read errors
-  }
-  try {
     const nativeUrl = window.LedgerFlowAndroid?.getApiBaseUrl?.();
     if (nativeUrl) {
-      return normalizeServerBaseUrl(nativeUrl);
+      const normalized = normalizeServerBaseUrl(nativeUrl);
+      if (normalized) return normalized;
     }
   } catch {
     // Ignore native bridge errors
   }
   const viteUrl = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
     ?.VITE_API_BASE_URL;
-  return normalizeServerBaseUrl(viteUrl);
-}
-
-export function setCloudApiBaseUrl(url: string | null): void {
-  try {
-    if (!url || !url.trim()) {
-      window.localStorage.setItem(CLOUD_API_URL_STORAGE_KEY, '');
-    } else {
-      const normalized = normalizeServerBaseUrl(url);
-      window.localStorage.setItem(CLOUD_API_URL_STORAGE_KEY, normalized);
-    }
-  } catch {
-    // Ignore storage errors
-  }
-  memoryToken = null;
-}
-
-export function isUsingCloudSqlApi(): boolean {
-  if (!isStandaloneAndroidRuntime()) return true;
-  return Boolean(getCloudApiBaseUrl());
-}
-
-export async function testCloudApiConnection(
-  rawUrl: string
-): Promise<{ ok: boolean; normalizedUrl: string; database?: string; error?: string }> {
-  const normalizedUrl = normalizeServerBaseUrl(rawUrl);
-  if (!normalizedUrl) {
-    return {
-      ok: false,
-      normalizedUrl: '',
-      error: 'Enter a valid https:// server URL (e.g. https://your-app.run.app).',
-    };
-  }
-  try {
-    const res = await fetch(`${normalizedUrl}/api/health`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data?.ok || data?.service !== 'ledgerflow') {
-      return {
-        ok: false,
-        normalizedUrl,
-        error: `Server responded with HTTP ${res.status} — make sure your published LedgerFlow backend is running.`,
-      };
-    }
-    return {
-      ok: true,
-      normalizedUrl,
-      database: typeof data.database === 'string' ? data.database : 'cloud-sql-postgresql',
-    };
-  } catch {
-    return {
-      ok: false,
-      normalizedUrl,
-      error: 'Unable to reach that server URL. Check your internet connection and verify the server is live.',
-    };
-  }
+  const normalizedVite = normalizeServerBaseUrl(viteUrl);
+  if (normalizedVite) return normalizedVite;
+  return DEFAULT_CLOUD_API_BASE_URL;
 }
 
 function buildApiUrl(path: string): string {
@@ -170,25 +101,43 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const res = await fetch(buildApiUrl(path), {
-    credentials: isCrossOriginApk ? 'omit' : 'same-origin',
-    ...options,
-    headers,
-  });
+  let res: Response;
+  try {
+    res = await fetch(buildApiUrl(path), {
+      credentials: isCrossOriginApk ? 'omit' : 'same-origin',
+      ...options,
+      headers,
+    });
+  } catch {
+    throw new Error(
+      'Unable to reach the live Cloud SQL server. Please check your internet connection and try again.'
+    );
+  }
 
   const refreshedToken = res.headers.get('X-Refreshed-Token');
   if (refreshedToken) {
     memoryToken = refreshedToken;
   }
 
-  const data = await res.json().catch(() => ({}));
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
   if (!res.ok) {
+    if (res.status === 503 || res.status === 502 || res.status === 504) {
+      throw new Error(
+        'Cloud SQL backend server is currently waking up or offline. Please ensure the LedgerFlow web app is published/deployed and retry.'
+      );
+    }
     throw new Error(data?.error || `Request failed (${res.status})`);
   }
   return data as T;
 }
 
-const remoteApi = {
+export const api = {
+  // Live sync fingerprint (background poll without resetting 5-min idle timer)
+  getSyncVersion: () =>
+    request<{ version: string }>('/api/sync/version', {
+      headers: { 'X-Background-Sync': '1' },
+    }),
   // Auth & OTP Verification
   login: (username: string, password: string) =>
     request<LoginResponse>('/api/auth/login', {
@@ -561,10 +510,3 @@ const remoteApi = {
       body: JSON.stringify(payload),
     }),
 };
-
-export const api: typeof remoteApi = new Proxy(remoteApi, {
-  get(_target, prop, receiver) {
-    const activeBackend = isUsingCloudSqlApi() ? remoteApi : localAppEngine;
-    return Reflect.get(activeBackend, prop, receiver);
-  },
-});

@@ -49,17 +49,13 @@ jobs:
           INPUT_URL: ${{ github.event.inputs.api_base_url }}
           VAR_API_URL: ${{ vars.API_BASE_URL }}
           VAR_APP_URL: ${{ vars.APP_URL }}
+          DEFAULT_URL: "https://ais-pre-mon76kn4wttmrf7tqaxi6e-616579702543.asia-northeast1.run.app"
         run: |
-          TARGET_URL="${INPUT_URL:-${VAR_API_URL:-$VAR_APP_URL}}"
+          TARGET_URL="${INPUT_URL:-${VAR_API_URL:-${VAR_APP_URL:-$DEFAULT_URL}}}"
           TARGET_URL="${TARGET_URL%/}"
           echo "url=$TARGET_URL" >> "$GITHUB_OUTPUT"
-          if [ -z "$TARGET_URL" ]; then
-            echo "mode=Bundled APK (On-Device Storage — connect Cloud SQL URL anytime in-app)" >> "$GITHUB_OUTPUT"
-            echo "Building LedgerFlow Android APK in Bundled Mode (no Cloud API_BASE_URL pre-configured)."
-          else
-            echo "mode=Bundled APK + Live Cloud SQL / PostgreSQL Sync ($TARGET_URL)" >> "$GITHUB_OUTPUT"
-            echo "Building LedgerFlow Android APK connected live to Cloud SQL API: $TARGET_URL"
-          fi
+          echo "mode=Bundled APK + Auto-Connected Live Cloud SQL / PostgreSQL ($TARGET_URL)" >> "$GITHUB_OUTPUT"
+          echo "Building LedgerFlow Android APK auto-connected live to Cloud SQL API: $TARGET_URL"
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v5
@@ -68,6 +64,8 @@ jobs:
 
       - name: Build LedgerFlow Web Bundle & Embed into APK
         shell: bash
+        env:
+          VITE_API_BASE_URL: ${{ steps.resolve_url.outputs.url }}
         run: |
           npm install --legacy-peer-deps --no-audit --no-fund
           npm run build

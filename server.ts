@@ -796,7 +796,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Background-Sync');
     res.setHeader('Access-Control-Expose-Headers', 'X-Refreshed-Token, Content-Disposition');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
@@ -848,8 +848,10 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
       req.sessionLoginAt = decoded.loginAt;
       req.sessionLastActivity = decoded.lastActivity;
 
-      // Refresh sliding inactivity cookie & Bearer token periodically on authenticated requests
-      if (idleMs > 15_000 || !cookieToken) {
+      // Refresh sliding inactivity cookie & Bearer token periodically on interactive requests
+      // (skip background live-sync polls so 5-minute inactivity auto-logout remains accurate)
+      const isBackgroundSync = req.headers['x-background-sync'] === '1';
+      if (!isBackgroundSync && (idleMs > 15_000 || !cookieToken)) {
         const refreshed = issueUserSession(req, res, found, decoded.loginAt);
         req.sessionLastActivity = refreshed.lastActivity;
         res.setHeader('X-Refreshed-Token', refreshed.token);
@@ -901,6 +903,50 @@ function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFuncti
   }
   next();
 }
+
+// Lightweight live-sync fingerprint so Webapp & Mobile APK reflect Cloud SQL updates immediately
+app.get('/api/sync/version', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const [allHeads, allSanctions, allTransactions, allUsers] = await Promise.all([
+      listBudgetHeads(),
+      listSanctions(),
+      listTransactions(),
+      req.user?.role === 'admin' ? listUsers() : Promise.resolve([]),
+    ]);
+
+    const hash = crypto.createHash('sha256');
+    hash.update(`h:${allHeads.length}|`);
+    for (const h of allHeads) {
+      hash.update(`${h.id}:${h.name}:${h.color}:${h.description}|`);
+    }
+    hash.update(`s:${allSanctions.length}|`);
+    for (const s of allSanctions) {
+      hash.update(
+        `${s.id}:${s.budgetHeadId}:${s.sanctionAmount}:${s.sanctionDate}:${s.sanctionOrderNo}:${s.approvalStatus}:${s.updatedAt}:${s.attachment?.storedFileName || ''}|`
+      );
+    }
+    hash.update(`t:${allTransactions.length}|`);
+    for (const t of allTransactions) {
+      hash.update(
+        `${t.id}:${t.budgetHeadId}:${t.amount}:${t.type}:${t.status}:${t.date}:${t.title}:${t.merchant}:${t.chequeNumber || ''}:${t.sanctionNumber || ''}:${t.chequeAttachment?.storedFileName || ''}:${t.sanctionAttachment?.storedFileName || ''}|`
+      );
+    }
+    if (req.user?.role === 'admin') {
+      hash.update(`u:${allUsers.length}|`);
+      for (const u of allUsers) {
+        hash.update(
+          `${u.id}:${u.role}:${u.active}:${u.activeFrom || ''}:${u.activeUntil || ''}:${u.deactivatedFrom || ''}:${u.deactivatedUntil || ''}|`
+        );
+      }
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ version: hash.digest('hex').slice(0, 24) });
+  } catch (err) {
+    console.error('Sync version check error:', err);
+    res.status(500).json({ error: 'Unable to check live sync status.' });
+  }
+});
 
 // ── Auth Routes (Password + OTP, Direct Mobile/Email OTP, Google Sign-In) ────
 

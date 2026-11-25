@@ -2,9 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
-  CheckCircle2,
   Clock,
-  Database,
   Eye,
   EyeOff,
   KeyRound,
@@ -14,16 +12,7 @@ import {
   RefreshCw,
   User,
 } from 'lucide-react';
-import {
-  api,
-  getCloudApiBaseUrl,
-  isAndroidEmailOtpReady,
-  isStandaloneAndroidRuntime,
-  loginStandaloneWithPasswordOnly,
-  setCloudApiBaseUrl,
-  setSessionToken,
-  testCloudApiConnection,
-} from '../lib/api';
+import { api, setSessionToken } from '../lib/api';
 import type { OtpChallengeResponse, SafeUser } from '../types/finance';
 
 const APP_VERSION = '2.0.0';
@@ -37,18 +26,6 @@ type AuthTab = 'login' | 'register';
 type SignInMethod = 'password-otp' | 'direct-otp';
 
 export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps) {
-  const isAndroidApk = isStandaloneAndroidRuntime();
-  const [cloudApiUrl, setCloudApiUrl] = useState<string>(() => getCloudApiBaseUrl());
-  const [cloudUrlInput, setCloudUrlInput] = useState<string>(() => getCloudApiBaseUrl());
-  const [showCloudPanel, setShowCloudPanel] = useState(false);
-  const [testingCloud, setTestingCloud] = useState(false);
-  const [cloudFeedback, setCloudFeedback] = useState<{
-    type: 'success' | 'error';
-    text: string;
-  } | null>(null);
-
-  const isCloudConnected = Boolean(cloudApiUrl);
-  const isStandalonePasswordOnly = isAndroidApk && !isCloudConnected && !isAndroidEmailOtpReady();
   const [mode, setMode] = useState<AuthTab>('login');
   const [signInMethod, setSignInMethod] = useState<SignInMethod>('password-otp');
 
@@ -136,25 +113,6 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to complete sign-in right now.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleStandaloneDirectPasswordLogin = async () => {
-    setError(null);
-    setPendingApproval(null);
-    if (!username.trim() || !password) {
-      setError('Enter your registered email/username and password to sign in.');
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await loginStandaloneWithPasswordOnly(username.trim(), password);
-      setSessionToken(res.token);
-      onAuthenticated(res.user, res.loginAt);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to sign in right now.');
     } finally {
       setLoading(false);
     }
@@ -426,9 +384,7 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 <p className="text-sm text-slate-500 mt-1">
                   {mode === 'login'
                     ? 'An OTP will be sent to verify your sign-in.'
-                    : isStandalonePasswordOnly
-                      ? 'Create your account. Administrator approval is required before signing in.'
-                      : 'An OTP will be sent to your registered email. Administrator approval is required before signing in.'}
+                    : 'An OTP will be sent to your registered email. Administrator approval is required before signing in.'}
                 </p>
               </div>
 
@@ -643,135 +599,14 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 >
                   <span>
                     {loading
-                      ? mode === 'login'
-                        ? 'Sending OTP...'
-                        : isStandalonePasswordOnly
-                          ? 'Creating Account...'
-                          : 'Sending OTP...'
+                      ? 'Sending OTP...'
                       : mode === 'login'
                         ? 'Send Verification OTP'
-                        : isStandalonePasswordOnly
-                          ? 'Create Account'
-                          : 'Create Account & Send Email OTP'}
+                        : 'Create Account & Send Email OTP'}
                   </span>
                   {!loading && <ArrowRight className="w-4 h-4" />}
                 </button>
-
-                {mode === 'login' && isStandalonePasswordOnly && signInMethod === 'password-otp' && (
-                  <button
-                    type="button"
-                    disabled={loading}
-                    onClick={handleStandaloneDirectPasswordLogin}
-                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <span>Sign in directly with Password</span>
-                  </button>
-                )}
               </form>
-            </div>
-          )}
-
-          {isAndroidApk && (
-            <div className="mt-5 pt-4 border-t border-slate-200">
-              <div className="flex items-center justify-between gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 font-medium text-slate-700 min-w-0">
-                  {isCloudConnected ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  ) : (
-                    <Database className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  )}
-                  <span className="truncate">
-                    {isCloudConnected
-                      ? `Live Cloud SQL: ${cloudApiUrl.replace(/^https?:\/\//i, '')}`
-                      : 'Local Device Storage'}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCloudPanel((prev) => !prev);
-                    setCloudFeedback(null);
-                  }}
-                  className="text-teal-700 hover:text-teal-800 font-semibold shrink-0 cursor-pointer"
-                >
-                  {showCloudPanel ? 'Close' : isCloudConnected ? 'Change' : 'Connect Cloud SQL'}
-                </button>
-              </div>
-
-              {showCloudPanel && (
-                <div className="mt-3 p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
-                  <label
-                    htmlFor="cloud-api-url"
-                    className="block text-[11px] font-medium text-slate-600"
-                  >
-                    Published LedgerFlow Backend URL (Cloud SQL / PostgreSQL)
-                  </label>
-                  <input
-                    id="cloud-api-url"
-                    type="url"
-                    value={cloudUrlInput}
-                    onChange={(e) => setCloudUrlInput(e.target.value)}
-                    placeholder="https://your-ledgerflow-server.run.app"
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-teal-700"
-                  />
-                  {cloudFeedback && (
-                    <p
-                      className={`text-[11px] leading-snug ${
-                        cloudFeedback.type === 'success' ? 'text-emerald-700' : 'text-red-700'
-                      }`}
-                    >
-                      {cloudFeedback.text}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={testingCloud || !cloudUrlInput.trim()}
-                      onClick={async () => {
-                        setTestingCloud(true);
-                        setCloudFeedback(null);
-                        setError(null);
-                        const result = await testCloudApiConnection(cloudUrlInput);
-                        setTestingCloud(false);
-                        if (!result.ok) {
-                          setCloudFeedback({
-                            type: 'error',
-                            text: result.error || 'Unable to connect to Cloud SQL server.',
-                          });
-                          return;
-                        }
-                        setCloudApiBaseUrl(result.normalizedUrl);
-                        setCloudApiUrl(result.normalizedUrl);
-                        setCloudUrlInput(result.normalizedUrl);
-                        setCloudFeedback({
-                          type: 'success',
-                          text: 'Connected live to Cloud SQL / PostgreSQL server. Sign in to sync.',
-                        });
-                      }}
-                      className="flex-1 h-9 rounded-lg bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-xs font-semibold cursor-pointer"
-                    >
-                      {testingCloud ? 'Testing...' : 'Save & Connect Live'}
-                    </button>
-                    {isCloudConnected && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCloudApiBaseUrl(null);
-                          setCloudApiUrl('');
-                          setCloudUrlInput('');
-                          setCloudFeedback({
-                            type: 'success',
-                            text: 'Switched back to local device storage.',
-                          });
-                        }}
-                        className="h-9 px-3 rounded-lg border border-slate-300 bg-white text-slate-700 text-xs font-medium hover:bg-slate-100 cursor-pointer"
-                      >
-                        Disconnect
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
