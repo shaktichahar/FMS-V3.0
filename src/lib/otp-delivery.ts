@@ -78,6 +78,7 @@ async function sendEmailOtpViaWebhook(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     redirect: 'follow',
+    signal: AbortSignal.timeout(8000),
     body: JSON.stringify({
       to: toEmail,
       fullName,
@@ -109,10 +110,35 @@ function normalizeSmtpPassword(raw: string | undefined, isGmailHost: boolean): s
   return isGmailHost ? cleaned.replace(/\s+/g, '') : cleaned;
 }
 
+function getConfiguredSmtpPass(isGmailHost: boolean): string {
+  const candidates = [
+    process.env.SMTP_PASS,
+    process.env.SMTP_PASSWORD,
+    process.env.GMAIL_APP_PASSWORD,
+    process.env.GMAIL_PASSWORD,
+    process.env.GMAIL_PASS,
+    process.env.EMAIL_APP_PASSWORD,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeSmtpPassword(candidate, isGmailHost);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function getConfiguredSmtpUser(): string {
+  return (
+    process.env.SMTP_USER?.trim() ||
+    process.env.GMAIL_USER?.trim() ||
+    process.env.EMAIL_USER?.trim() ||
+    ADMIN_GMAIL
+  );
+}
+
 function formatSmtpFailureMessage(err: unknown): string {
   const rawMsg = err instanceof Error ? err.message : String(err || '');
   if (/534-5\.7\.9|Application-specific password required/i.test(rawMsg)) {
-    return 'Gmail requires a 16-character Google App Password (not your regular Gmail password). Enable 2-Step Verification at myaccount.google.com/apppasswords, generate an App Password for "LedgerFlow", and save it as GMAIL_APP_PASSWORD in Settings → Secrets (or set OTP_EMAIL_WEBHOOK_URL instead).';
+    return 'Gmail requires a 16-character Google App Password (not your regular Gmail password). Enable 2-Step Verification at myaccount.google.com/apppasswords, generate an App Password for "LedgerFlow", and save it as GMAIL_APP_PASSWORD in Cloud Run Variables & Secrets (or set OTP_EMAIL_WEBHOOK_URL instead).';
   }
   if (/535-5\.7\.8|Username and Password not accepted/i.test(rawMsg)) {
     return 'Gmail rejected SMTP credentials (535-5.7.8). Verify SMTP_USER matches your Gmail address and GMAIL_APP_PASSWORD is a valid 16-character Google App Password.';
@@ -124,10 +150,7 @@ export function isOtpDeliveryConfigured(): boolean {
   const hasWebhook = Boolean(process.env.OTP_EMAIL_WEBHOOK_URL?.trim());
   const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
   const isGmailHost = host.toLowerCase() === 'smtp.gmail.com';
-  const hasSmtpPass = Boolean(
-    normalizeSmtpPassword(process.env.SMTP_PASS, isGmailHost) ||
-      normalizeSmtpPassword(process.env.GMAIL_APP_PASSWORD, isGmailHost)
-  );
+  const hasSmtpPass = Boolean(getConfiguredSmtpPass(isGmailHost));
   const hasTwilio = Boolean(
     process.env.TWILIO_ACCOUNT_SID?.trim() &&
       process.env.TWILIO_AUTH_TOKEN?.trim() &&
@@ -146,8 +169,7 @@ async function sendEmailOtp(
   const hasWebhook = Boolean(process.env.OTP_EMAIL_WEBHOOK_URL?.trim());
   const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
   const isGmailHost = host.toLowerCase() === 'smtp.gmail.com';
-  const gmailPass = normalizeSmtpPassword(process.env.GMAIL_APP_PASSWORD, isGmailHost);
-  const smtpPass = normalizeSmtpPassword(process.env.SMTP_PASS, isGmailHost) || gmailPass;
+  const smtpPass = getConfiguredSmtpPass(isGmailHost);
 
   if (hasWebhook) {
     try {
@@ -170,22 +192,14 @@ async function sendEmailOtp(
     return false;
   }
 
-  const user = process.env.SMTP_USER?.trim() || ADMIN_GMAIL;
-  const port = Number(process.env.SMTP_PORT || (isGmailHost ? 465 : 587));
+  const user = getConfiguredSmtpUser();
+  const explicitPort = process.env.SMTP_PORT?.trim();
+  const port = Number(explicitPort || (isGmailHost ? 465 : 587));
   const secure =
     process.env.SMTP_SECURE !== undefined
       ? process.env.SMTP_SECURE === 'true'
       : port === 465;
   const from = process.env.SMTP_FROM?.trim() || `LedgerFlow Security <${user}>`;
-
-  const transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: { user, pass: smtpPass },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-  });
 
   const plainName = String(fullName || '').replace(/[\r\n<>]/g, '').trim();
   const plainLogin = String(loginIdentifier || '').replace(/[\r\n<>]/g, '').trim();
@@ -204,7 +218,7 @@ async function sendEmailOtp(
     ? `Hello ${plainName},\n\nThank you for creating an account (${plainLogin}).\n\nYour 6-digit email verification OTP is: ${otp}\n\nThis code expires in 5 minutes and can only be used once. After verifying your email, your account will await administrator approval before sign-in is enabled.`
     : `Hello ${plainName},\n\nA login verification OTP was requested for account: ${plainLogin}\n\nYour 6-digit LedgerFlow OTP is: ${otp}\n\nThis code expires in 5 minutes and can only be used once.`;
 
-  await transporter.sendMail({
+  const mailOptions = {
     from,
     to: toEmail,
     subject,
@@ -220,7 +234,33 @@ async function sendEmailOtp(
         <p style="margin: 16px 0 0; color: #64748b; font-size: 12px;">This code is valid for 5 minutes and can only be used once.</p>
       </div>
     `,
-  });
+  };
+
+  const sendViaPort = async (targetPort: number, targetSecure: boolean) => {
+    const transporter = nodemailer.createTransport({
+      host,
+      port: targetPort,
+      secure: targetSecure,
+      requireTLS: !targetSecure && isGmailHost,
+      auth: { user, pass: smtpPass },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+    });
+    await transporter.sendMail(mailOptions);
+  };
+
+  try {
+    await sendViaPort(port, secure);
+  } catch (smtpErr) {
+    const rawMsg = smtpErr instanceof Error ? smtpErr.message : String(smtpErr || '');
+    const isAuthError = /534-5\.7\.9|535-5\.7\.8|Application-specific password|Username and Password/i.test(rawMsg);
+    // If Gmail port 465 encounters a transient/firewall error, retry on STARTTLS port 587
+    if (isGmailHost && !explicitPort && port === 465 && !isAuthError) {
+      await sendViaPort(587, false);
+    } else {
+      throw smtpErr;
+    }
+  }
 
   return true;
 }

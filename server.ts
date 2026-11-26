@@ -817,7 +817,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({ ok: true, service: 'ledgerflow', database: databaseMode });
+  res.json({
+    ok: true,
+    service: 'ledgerflow',
+    database: databaseMode,
+    otpConfigured: isOtpDeliveryConfigured(),
+  });
 });
 
 async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
